@@ -1,14 +1,20 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
-app = FastAPI(
-    title="FINPILOT API",
-    description="Autonomous AI Financial Analyst",
-    version="0.1.0",
-)
+from backend.app.api.routes.health import router as health_router
+from backend.app.api.routes.queries import router as query_router
+from backend.app.config import get_settings
+from backend.app.observability.logging import configure_logging
+
+app = FastAPI(title="ResearchLens Query Service", version="0.1.0")
+configure_logging(get_settings().log_level)
+app.include_router(health_router)
+app.include_router(query_router)
 
 
 @app.get("/")
-def root():
+def root() -> dict[str, str]:
     return {
         "project": "FINPILOT",
         "status": "running",
@@ -16,6 +22,15 @@ def root():
     }
 
 
-@app.get("/health")
-def health():
-    return {"status": "healthy"}
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    del request
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(ValueError)
+async def value_error(request: Request, exc: ValueError) -> JSONResponse:
+    del request
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
