@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RetrievalFilters(BaseModel):
@@ -6,6 +6,16 @@ class RetrievalFilters(BaseModel):
     page_start: int | None = Field(default=None, ge=1)
     page_end: int | None = Field(default=None, ge=1)
     content_types: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "RetrievalFilters":
+        if (
+            self.page_start is not None
+            and self.page_end is not None
+            and self.page_start > self.page_end
+        ):
+            raise ValueError("page_start must not be greater than page_end")
+        return self
 
 
 class RetrievalCandidate(BaseModel):

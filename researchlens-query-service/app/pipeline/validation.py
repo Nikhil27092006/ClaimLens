@@ -19,6 +19,8 @@ async def validate_query(
 ) -> ValidationResult:
     if not request.question.strip():
         raise ValueError("Question must not be empty")
+    if len(request.paper_ids) > 20:
+        raise ValueError("Too many papers selected")
     ready = await paper_repository.ready_papers(workspace_id, request.paper_ids)
     if not ready:
         return ValidationResult(set(), "no_ready_papers")

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,14 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_environment(self) -> "Settings":
+        if self.app_env == "production" and self.use_fake_providers:
+            raise ValueError("Fake providers are not allowed in production")
+        if self.embedding_dimension < 1:
+            raise ValueError("Embedding dimension must be positive")
+        return self
 
 
 @lru_cache

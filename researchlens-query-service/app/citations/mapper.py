@@ -2,6 +2,7 @@ from app.schemas.citation import ClaimResponse, citation_from_candidate
 from app.schemas.generation import GeneratedClaim
 from app.schemas.retrieval import EvidenceSource
 from app.citations.validator import validate_claim
+from app.citations.support_checker import check_claim_support
 
 
 def map_claim(
@@ -9,6 +10,9 @@ def map_claim(
 ) -> ClaimResponse:
     source_map = {item.source_id: item for item in evidence}
     status = validate_claim(claim, evidence)
+    support_status = check_claim_support(claim, evidence)
+    if status == "valid" and support_status != "entails":
+        status = "unsupported"
     if status != "valid":
         return ClaimResponse(
             text=claim.text,

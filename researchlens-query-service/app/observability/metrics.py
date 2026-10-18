@@ -8,3 +8,7 @@ class Timer:
 
     def __exit__(self, *_: object) -> None:
         self.elapsed_seconds = perf_counter() - self.started_at
+
+
+def timer() -> Timer:
+    return Timer()

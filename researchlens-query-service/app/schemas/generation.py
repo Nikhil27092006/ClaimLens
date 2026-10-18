@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 ClaimType = Literal["fact", "comparison", "interpretation", "uncertainty"]
@@ -17,3 +17,11 @@ class GeneratedAnswer(BaseModel):
     answer: str = Field(min_length=1)
     claims: list[GeneratedClaim] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
+
+    @field_validator("answer")
+    @classmethod
+    def validate_answer(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("answer must not be empty")
+        return value
