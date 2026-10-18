@@ -1,1 +1,0 @@
-"""ResearchLens query service."""
