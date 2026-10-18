@@ -1,0 +1,28 @@
+[
+  {
+    "chunk_id": "chunk-1",
+    "workspace_id": "workspace-1",
+    "paper_id": "paper-a",
+    "paper_title": "Paper A",
+    "text": "Paper A achieved an F1-score of 0.91 on Dataset X.",
+    "page_start": 7,
+    "page_end": 7,
+    "section": "Results",
+    "content_type": "text",
+    "chunk_index": 1,
+    "content_hash": "hash-a"
+  },
+  {
+    "chunk_id": "chunk-2",
+    "workspace_id": "workspace-1",
+    "paper_id": "paper-b",
+    "paper_title": "Paper B",
+    "text": "Paper B achieved an F1-score of 0.88 on Dataset Y.",
+    "page_start": 8,
+    "page_end": 8,
+    "section": "Results",
+    "content_type": "text",
+    "chunk_index": 2,
+    "content_hash": "hash-b"
+  }
+]
