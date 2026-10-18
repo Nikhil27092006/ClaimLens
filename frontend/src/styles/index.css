@@ -1,0 +1,138 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Base styles mirror the design artboards, which have no CSS reset: line-height is the browser's
+ * `normal` and links are underlined unless a component says otherwise.
+ */
+@layer base {
+  html {
+    color-scheme: light;
+    line-height: normal;
+  }
+
+  body {
+    @apply bg-paper font-sans text-ink antialiased;
+    font-size: 16px;
+  }
+
+  a {
+    color: var(--ink);
+    text-decoration: underline;
+  }
+
+  a:hover {
+    color: var(--support);
+  }
+
+  /* Headings and table headers are bold by browser default; the artboards rely on it. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  th {
+    font-weight: 700;
+  }
+
+  /* Browsers do not pass letter-spacing into form controls (Tailwind's preflight does). */
+  button,
+  input,
+  textarea,
+  select {
+    letter-spacing: normal;
+  }
+
+  ::placeholder {
+    color: var(--insufficient);
+    opacity: 1;
+  }
+
+  mark {
+    background-color: var(--marker);
+    color: var(--ink);
+    padding: 0 3px;
+  }
+
+  ::selection {
+    background-color: var(--marker);
+    color: var(--ink);
+  }
+
+  /* Focus ring: 2px marker outline over a 2px ink offset, so it shows on paper and on ink. */
+  :focus-visible {
+    outline: 2px solid var(--marker);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--ink);
+  }
+
+  /* Programmatic focus targets, e.g. <main tabindex="-1"> after "Skip to content". */
+  [tabindex='-1']:focus {
+    outline: none;
+    box-shadow: none;
+  }
+}
+
+@layer components {
+  /* Evidence viewer: the PDF text layer multiplies over the page canvas, so the marker shows
+     behind the printed sentence instead of covering it. */
+  .evidence-pdf .textLayer {
+    mix-blend-mode: multiply;
+  }
+
+  .evidence-pdf .textLayer mark.pdf-hit {
+    background-color: var(--marker);
+    color: transparent;
+    padding: 0;
+    outline: 2px solid var(--ink);
+  }
+}
+
+@layer utilities {
+  .graph-paper {
+    background-color: var(--paper);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: var(--grid-size) var(--grid-size);
+  }
+
+  /* Dark panels: agent trace, evidence viewer, login left side. */
+  .graph-paper-ink {
+    background-color: var(--ink);
+    background-image:
+      linear-gradient(var(--ink-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--ink-grid) 1px, transparent 1px);
+    background-size: var(--grid-size) var(--grid-size);
+  }
+
+  .hatch-partial {
+    background-image: repeating-linear-gradient(
+      135deg,
+      var(--partial-hatch) 0 6px,
+      var(--sheet) 6px 10px
+    );
+  }
+
+  /* Compact meter (login example card). */
+  .hatch-partial-sm {
+    background-image: repeating-linear-gradient(
+      135deg,
+      var(--partial-hatch) 0 4px,
+      var(--sheet) 4px 7px
+    );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
