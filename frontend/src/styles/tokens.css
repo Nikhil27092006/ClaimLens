@@ -1,0 +1,55 @@
+/*
+ * ClaimLens design tokens: the single source of truth for colour, type and layout.
+ * Hex values live only in this file; tailwind.config.ts reads them through var().
+ * Spec: docs/FRONTEND_BUILD_PROMPT.md §3.
+ */
+:root {
+  /* Surfaces */
+  --paper: #edefe9;
+  --grid: #dfe2da;
+  --sheet: #fbfbf8;
+  --sheet-2: #f4f5f0;
+
+  /* Ink */
+  --ink: #121412;
+  --ink-2: #2a2e29;
+  --ink-grid: #20251f;
+  --muted: #4a4f49;
+  --muted-on-ink: #8e948a;
+  --muted-on-ink-2: #b9beb4;
+
+  /* Rules */
+  --rule: #cdd1c8;
+  --rule-dashed: #9ba196;
+
+  /* The one accent: highlighter */
+  --marker: #ddf24a;
+
+  /* Claim status */
+  --support: #1f4ed8;
+  --support-tint: #e3eafb;
+  --contra: #b93a0a;
+  --partial: #8a5e00;
+  --partial-hatch: #c9a227;
+  --partial-edge: #9a6a00;
+  --insufficient: #6b7068;
+
+  /* Used by the design but not listed in the build prompt's token table */
+  --on-ink: #e9ece4; /* text and logo stroke on dark panels */
+  --rule-on-ink: #2e332d; /* row dividers on dark panels (agent trace) */
+  --on-status: #ffffff; /* text on solid Supported / Contradicted tags */
+  --chip-neutral: #e6e8e2; /* neutral citation chip background */
+  --pdf-line: #d5d8d0; /* text-line bars in the PDF page placeholder */
+
+  /* Type (Google Fonts are loaded in index.html). Fallbacks match the artboards exactly: glyphs
+     the fonts lack, like "→" in Hanken Grotesk, then render from the same fallback font. */
+  --font-display: 'Bricolage Grotesque', sans-serif;
+  --font-sans: 'Hanken Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-quote: 'Newsreader', serif;
+
+  /* Layout */
+  --grid-size: 24px;
+  --layout-max: 1320px; /* content width; the page padding sits outside it */
+  --layout-pad: 32px;
+}
