@@ -1,0 +1,14 @@
+[
+  {
+    "chunk_id": "chunk-1",
+    "workspace_id": "workspace-1",
+    "paper_id": "paper-1",
+    "paper_title": "Paper A",
+    "text": "The proposed model achieved an F1-score of 0.91.",
+    "page_start": 7,
+    "page_end": 7,
+    "section": "Results",
+    "content_type": "text",
+    "content_hash": "hash-1"
+  }
+]
