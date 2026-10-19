@@ -1,36 +1,120 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ClaimLens frontend
 
-## Getting Started
+Vite + React 18 + TypeScript (strict), React Router v6, TanStack Query v5, Tailwind CSS v3, MSW v2
+and react-pdf. The build plan, design system and API contract are in
+[`docs/FRONTEND_BUILD_PROMPT.md`](../docs/FRONTEND_BUILD_PROMPT.md); the design is
+[`docs/design-reference/`](../docs/design-reference/).
 
-First, run the development server:
+## Run it
+
+Requires Node 20.19+ or 22.12+.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd frontend
+npm install
+npm run dev        # http://localhost:5173
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+No `.env` is needed: unset variables fall back to the values in `.env.example`, which run the
+whole app against the mock API. Open the app, press **Try the live demo — no account**, then:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. **Check** (`/`): the demo claim is pre-filled. Press **Check claim →** (or Ctrl/⌘+Enter) and
+   watch the agent trace stream for about 6 seconds into the verdict, evidence and verified count.
+   **Open page →** opens the cited PDF page with the quote highlighted.
+2. **Library**: drop or browse for PDFs (checked client-side: PDF only, at most 5, 25 MB each),
+   watch them index, select papers (kept in `?sel=`), compare or ask across them.
+3. **Ask**: pick a suggested question or type one (Enter sends, Shift+Enter is a new line).
+   Click a citation such as `[2 · p.8]`; the evidence viewer opens at that page. Esc closes it.
+4. **Compare** and **Conflicts**: the table and conflict cards for the selected papers; every
+   value and quote links to its page.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Scripts
 
-## Learn More
+| Script               | What it does                                                               |
+| -------------------- | -------------------------------------------------------------------------- |
+| `npm run dev`        | Dev server with hot reload                                                 |
+| `npm run build`      | Typecheck, then build to `dist/`                                           |
+| `npm run preview`    | Serve the production build locally                                         |
+| `npm run lint`       | ESLint (typescript-eslint, react-hooks, jsx-a11y); fails on any warning    |
+| `npm run typecheck`  | `tsc` over the app, the config files and `scripts/`                        |
+| `npm test`           | Vitest + React Testing Library, single run (`npm run test:watch` to watch) |
+| `npm run format`     | Prettier, write in place (`format:check` to verify only)                   |
+| `npm run mocks:pdfs` | Regenerate the fictional sample PDFs in `src/mocks/pdfs/`                  |
 
-To learn more about Next.js, take a look at the following resources:
+## Environment variables
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Variable                    | Default                        | Purpose                                                                     |
+| --------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
+| `VITE_API_BASE_URL`         | `http://localhost:8000/api/v1` | FastAPI base URL                                                            |
+| `VITE_USE_MOCKS`            | `true`                         | Answer every API call from the MSW mock server in the browser tab           |
+| `VITE_ENABLE_CLAIM_MODE`    | `true`                         | Show the Check screen; when `false`, `/` redirects to `/library`            |
+| `VITE_ENABLE_FETCH_BY_LINK` | `true`                         | Show "Fetch by link" in the Library (needs the proposed `/documents/fetch`) |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## The mock API
 
-## Deploy on Vercel
+With `VITE_USE_MOCKS=true`, MSW's service worker (`public/mockServiceWorker.js`) answers every
+endpoint in the build prompt's §4, from `src/mocks/`:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `papers.ts` holds the fictional papers and passages from the design artboards; `fixtures.ts`
+  builds the job results; `db.ts` keeps documents and jobs in memory (reset on reload).
+- Jobs stream their steps over SSE with 300–900 ms between steps, like the real agent trace.
+- `GET /documents/{id}/file` serves sample PDFs from `src/mocks/pdfs/`, generated by
+  `npm run mocks:pdfs` with every cited passage on its page, so the evidence viewer can find and
+  highlight it. Uploaded PDFs are served back as uploaded. Replace the samples with real
+  open-licence PDFs at any time (keep the file names).
+- Toggles: add `?mock=error` (jobs stop after three steps with `UPSTREAM_ERROR`), `?mock=slow`
+  (4× slower) or `?mock=error,slow` to any URL. The choice lasts for the tab; `?mock=` resets it.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Tests use the same handlers through `msw/node` with no latency (`src/test/setup.ts`).
+
+### Contract additions the UI uses
+
+The design shows a few things the §4 contract does not carry. The UI uses these optional fields
+when present and degrades without them; they are marked `PROPOSED` in `src/api/types.ts`:
+
+| Where                        | Field / endpoint                                          | Used for                                 |
+| ---------------------------- | --------------------------------------------------------- | ---------------------------------------- |
+| `Evidence`                   | `highlight?: string`                                      | The marked span inside each quote        |
+| `Evidence`                   | `note?: string`                                           | The partial-evidence explanation         |
+| `CheckResult`                | `summary_highlight?: string`                              | The marked phrase in the verdict summary |
+| `CheckResult`                | `sources?: {name, count}[]`                               | "Semantic Scholar · 14" chips            |
+| `QueryResult`                | `highlights?: string[]`                                   | Marked phrases in the answer             |
+| `CompareCell`                | `section?: string`                                        | "p.3 · §2" cell links                    |
+| `ContradictionSide`          | `title?: string`                                          | "A · paper title · p.7"                  |
+| `POST /check` body           | `sources?: ("semantic_scholar" \| "arxiv" \| "tavily")[]` | Edit sources                             |
+| `POST /documents/{id}/retry` | new endpoint                                              | "retry with OCR" on failed papers        |
+
+Two readings of the contract to confirm with the backend: `[n]` in an Ask answer is the n-th
+paper of the request's `document_ids`, and `Document.progress` is 0–100.
+
+## Layout
+
+```text
+src/
+  app/         router, providers, AppLayout, nav config, kit/ (the /_kit gallery)
+  api/         types.ts, client.ts (fetch + XHR upload, typed ApiError), sse.ts (useJobStream),
+               hooks.ts (TanStack Query hooks)
+  mocks/       MSW handlers, fixtures, in-memory db, sample PDFs
+  components/  design-system primitives, each with a colocated *.test.tsx
+  features/    auth/, check/, library/, ask/, compare/, conflicts/, evidence/ (the PDF viewer)
+  styles/      tokens.css (all colour/type tokens), index.css (Tailwind + base styles)
+  lib/         small utilities (env flags, cn, highlight, relative time, focus trap…)
+  test/        Vitest setup and render helpers
+scripts/       make-sample-pdfs.ts
+```
+
+The evidence viewer lives in `features/evidence/`: `useEvidenceViewer` keeps it in the URL
+(`?doc=DOC002&page=8&chunk=DOC002_CH042&cite=2`), `PdfPage` (lazy-loaded react-pdf) renders the
+page with its text layer, and `textMatch.ts` finds the quote across text items (ignoring line
+breaks, hyphenation and punctuation), falling back to the best approximate window.
+
+## Component kit
+
+With `npm run dev`, open <http://localhost:5173/_kit> to see every design-system component
+with sample content from the artboards. The route only exists in dev; production builds leave it
+out.
+
+Design tokens live only in `src/styles/tokens.css`. `tailwind.config.ts` points at them with
+`var()` and replaces Tailwind's default colours, radii and shadows, so classes like `rounded-lg`
+produce square corners and off-palette colours do not exist. Use `graph-paper` /
+`graph-paper-ink` for the grid backgrounds and `hatch-partial` for the partial-evidence hatch.

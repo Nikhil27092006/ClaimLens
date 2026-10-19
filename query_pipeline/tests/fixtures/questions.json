@@ -1,0 +1,4 @@
+[
+  {"question": "Which paper achieved the highest F1-score?", "paper_ids": ["paper-a", "paper-b"]},
+  {"question": "Which dataset was used?", "paper_ids": ["paper-a"]}
+]
