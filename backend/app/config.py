@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection: str = "paper_chunks"
 
-    bm25_index_path: str = "storage/bm25/index.pkl"
+    bm25_index_path: str = "storage/bm25/index.sqlite3"
 
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     min_relevance_score: float = Field(default=0.65, ge=0.0, le=1.0)
     max_question_length: int = Field(default=4000, ge=100, le=20000)
     max_papers_per_query: int = Field(default=20, ge=1, le=100)
-    use_fake_providers: bool = False
+    use_fake_providers: bool | None = None
 
     model_config = SettingsConfigDict(
         env_file=(
@@ -51,6 +51,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_environment(self) -> "Settings":
+        if self.use_fake_providers is None:
+            self.use_fake_providers = self.app_env != "production"
         if self.app_env == "production" and self.use_fake_providers:
             raise ValueError("Fake providers are not allowed in production")
         if self.embedding_dimension < 1:
