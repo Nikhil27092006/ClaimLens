@@ -7,8 +7,9 @@ import { parseIds } from './format';
 /** At most this many papers go into Ask, Compare or Conflicts when none are chosen. */
 const DEFAULT_SCOPE = 10;
 
-/** Only include real indexed papers (DOC- prefix), never mock stubs. */
-const isRealPaper = (doc: Document) => doc.document_id.startsWith('DOC-');
+/** Only include ready papers (real uploaded DOC- or valid DOC stubs). */
+const isRealPaper = (doc: Document) =>
+  doc.status === 'ready' && (doc.document_id.startsWith('DOC-') || doc.document_id.startsWith('DOC'));
 
 /**
  * The papers Ask, Compare and Conflicts work on, driven by ?docs=DOC-xxx,DOC-yyy.
@@ -21,45 +22,53 @@ export function useScope() {
   const documents = useDocuments();
   const [params, setParams] = useSearchParams();
   const raw = params.get('docs');
-  // Track which papers we've already seen as ready so we only add new ones
-  const seenReady = useRef<Set<string>>(new Set());
+  const initialized = useRef(false);
+  const knownReadyIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!documents.data) return;
 
-    const realReady = documents.data
+    const readyIds = documents.data
       .filter((doc) => doc.status === 'ready' && isRealPaper(doc))
       .map((doc) => doc.document_id);
 
-    if (realReady.length === 0) return;
+    if (readyIds.length === 0) return;
 
-    setParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        const current = parseIds(prev.get('docs'));
-        const currentSet = new Set(current);
+    // First time documents data arrives:
+    if (!initialized.current) {
+      initialized.current = true;
+      readyIds.forEach((id) => knownReadyIds.current.add(id));
 
-        // Add any newly-ready real papers that aren't in scope yet
-        const toAdd = realReady.filter((id) => !currentSet.has(id) && !seenReady.current.has(id));
+      // Seed ?docs= only when empty/null
+      if (params.get('docs') === null) {
+        setParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            next.set('docs', readyIds.slice(0, DEFAULT_SCOPE).join(','));
+            return next;
+          },
+          { replace: true },
+        );
+      }
+      return;
+    }
 
-        if (toAdd.length === 0 && current.length > 0) return prev; // nothing changed
-
-        // Merge existing scope + new papers, capped at DEFAULT_SCOPE
-        const merged = [...current.filter((id) => realReady.includes(id)), ...toAdd]
-          .slice(0, DEFAULT_SCOPE);
-
-        // Seed with all ready papers when scope is empty
-        const final = merged.length > 0 ? merged : realReady.slice(0, DEFAULT_SCOPE);
-
-        // Mark all as seen so we don't re-add on next render
-        final.forEach((id) => seenReady.current.add(id));
-
-        next.set('docs', final.join(','));
-        return next;
-      },
-      { replace: true },
-    );
-  }, [documents.data, setParams]);
+    // Subsequent updates (e.g. newly uploaded paper finished indexing):
+    const newlyReady = readyIds.filter((id) => !knownReadyIds.current.has(id));
+    if (newlyReady.length > 0) {
+      newlyReady.forEach((id) => knownReadyIds.current.add(id));
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          const current = parseIds(prev.get('docs'));
+          const merged = [...current, ...newlyReady].slice(0, DEFAULT_SCOPE);
+          next.set('docs', merged.join(','));
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [documents.data, params, setParams]);
 
   return useMemo(() => {
     const byId = new Map((documents.data ?? []).map((doc) => [doc.document_id, doc]));

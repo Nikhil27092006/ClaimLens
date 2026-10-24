@@ -247,17 +247,22 @@ async def retry_document(
     return documents[document_id]
 
 
+def add_step(job_id: str, message: str, step_type: str = "progress") -> None:
+    if job_id in jobs and "steps" in jobs[job_id]:
+        jobs[job_id]["steps"].append({"type": step_type, "message": message})
+
+
 async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa: PLR0912, PLR0915
     job = jobs[job_id]
     try:
         if kind == "query":
+            add_step(job_id, "Searching indexed papers and retrieving relevant sections...")
             orchestrator = get_orchestrator()
             paper_ids = body.get("document_ids", [])
-            # Fallback to real indexed (DOC-prefixed) ready documents only — never mock stubs
             if not paper_ids:
                 paper_ids = [
                     d_id for d_id, doc in documents.items()
-                    if doc.get("status") == "ready" and d_id.startswith("DOC-")
+                    if doc.get("status") == "ready"
                 ]
             if not paper_ids:
                 job.update(
@@ -266,10 +271,12 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                 )
                 return
 
+            add_step(job_id, "Synthesizing answer and validating citations...")
             response = await orchestrator.run(
                 "default",
                 QueryRequest(question=body["question"], paper_ids=paper_ids),
             )
+            add_step(job_id, "Finalizing response...")
             citations_by_id = {c.source_id: c for c in response.citations}
             claims_out = []
             for claim in response.claims:
@@ -314,13 +321,13 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
 
         elif kind == "check":
             claim = body.get("claim", "")
-            # Only use real indexed papers
             ready_papers = [
                 d for d in documents.values()
-                if d.get("status") == "ready" and d["document_id"].startswith("DOC-")
+                if d.get("status") == "ready"
             ]
             paper_ids = [d["document_id"] for d in ready_papers[:5]]
 
+            add_step(job_id, f"Checking claim against {len(paper_ids)} ready papers...")
             orchestrator = get_orchestrator()
             answer_summary = ""
             supports = []
@@ -377,16 +384,15 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
             }
 
         elif kind == "compare":
+            add_step(job_id, "Selecting papers for comparison...")
             doc_ids = body.get("document_ids", [])
-            # Only compare real indexed papers
             real_ready = [
                 d_id for d_id, doc in documents.items()
-                if doc.get("status") == "ready" and d_id.startswith("DOC-")
+                if doc.get("status") == "ready"
             ]
             if not doc_ids:
                 doc_ids = real_ready[:4]
             else:
-                # Filter to only those that are actually indexed
                 doc_ids = [d for d in doc_ids if d in real_ready]
 
             if len(doc_ids) < 2:
@@ -405,48 +411,115 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                 "Limitations",
             ])
 
+            add_step(job_id, f"Analyzing {len(attributes)} attributes across {len(doc_ids)} papers in parallel...")
             orchestrator = get_orchestrator()
+
+            from query_pipeline.app.schemas.retrieval import RetrievalFilters
+            from query_pipeline.app.pipeline.fusion import reciprocal_rank_fusion
+            from query_pipeline.app.pipeline.evidence_selection import select_evidence
+            from query_pipeline.app.pipeline.context_compression import compress_context
+
+            async def extract_for_paper(d_id: str) -> dict[str, dict[str, Any]]:
+                doc = documents.get(d_id, {})
+                title = doc.get("title", d_id)
+                filters = RetrievalFilters()
+                try:
+                    emb = await orchestrator.embedding_provider.embed(
+                        f"{title} methods results benchmarks limitations contributions"
+                    )
+                    dense = await orchestrator.dense_retriever.search(
+                        emb, "default", [d_id], filters, 15
+                    )
+                    sparse = await orchestrator.sparse_retriever.search(
+                        "method results benchmark cost contribution limitations",
+                        "default",
+                        [d_id],
+                        filters,
+                        15,
+                    ) if orchestrator.sparse_retriever else []
+                    candidates = reciprocal_rank_fusion([dense, sparse]) if sparse else dense
+                    evidence = select_evidence(candidates, 5)
+                    evidence = compress_context(evidence, 3000)
+                except Exception:
+                    evidence = []
+
+                first_chunk = evidence[0].candidate.chunk_id if evidence else f"{d_id}_ch1"
+                first_page = evidence[0].candidate.page_start if evidence else 1
+                first_section = evidence[0].candidate.section if evidence else "Results"
+
+                evidence_text = "\n".join(
+                    f"[{i+1}] {item.candidate.text}" for i, item in enumerate(evidence)
+                )
+                system_prompt = (
+                    "You are an expert research paper analyst. Based on the provided evidence, "
+                    "extract a concise 1-sentence summary for each requested attribute. "
+                    "Output ONLY a valid JSON object where keys are the exact attribute names "
+                    "and values are 1-sentence strings. If not mentioned, state 'Not explicitly reported in paper.'"
+                )
+                user_prompt = (
+                    f"Paper: {title}\n"
+                    f"Attributes to extract: {json.dumps(attributes)}\n\n"
+                    f"Evidence:\n{evidence_text}"
+                )
+                try:
+                    resp = await orchestrator.generator.client.chat.completions.create(
+                        model=orchestrator.generator.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        max_tokens=600,
+                        temperature=0.1,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    )
+                    content = (resp.choices[0].message.content or "").strip()
+                    idx1, idx2 = content.find("{"), content.rfind("}")
+                    if idx1 != -1 and idx2 != -1:
+                        data = json.loads(content[idx1:idx2+1])
+                    else:
+                        data = {}
+                except Exception:
+                    data = {}
+
+                return {
+                    attr: {
+                        "value": str(data.get(attr, f"Not explicitly reported in {title}.")),
+                        "chunk_id": first_chunk,
+                        "page": first_page,
+                        "section": first_section or "Results",
+                    }
+                    for attr in attributes
+                }
+
+            # Run extraction for all papers concurrently
+            paper_extractions = await asyncio.gather(
+                *[extract_for_paper(d_id) for d_id in doc_ids],
+                return_exceptions=False,
+            )
+            paper_data_map = dict(zip(doc_ids, paper_extractions))
+
             rows = []
             for attr in attributes:
                 values: dict[str, Any] = {}
                 for d_id in doc_ids:
-                    doc = documents.get(d_id, {})
-                    title = doc.get("title", d_id)
-                    try:
-                        resp = await orchestrator.run(
-                            "default",
-                            QueryRequest(
-                                question=(
-                                    f"In one sentence, what does '{title}' report about '{attr}'? "
-                                    "Be specific with numbers if available."
-                                ),
-                                paper_ids=[d_id],
-                            ),
-                        )
-                        cell_text = resp.answer.strip().split("\n")[0][:300]
-                        chunk_id = resp.citations[0].chunk_id if resp.citations else f"{d_id}_ch1"
-                        page = resp.citations[0].page_start if resp.citations else 1
-                        section = resp.citations[0].section if resp.citations else "Results"
-                    except Exception:
-                        cell_text = f"Information about {attr} not found in {title}."
-                        chunk_id = f"{d_id}_ch1"
-                        page = 1
-                        section = "Results"
-                    values[d_id] = {
-                        "value": cell_text,
-                        "chunk_id": chunk_id,
-                        "page": page,
-                        "section": section or "Results",
-                    }
+                    paper_dict = paper_data_map.get(d_id, {})
+                    values[d_id] = paper_dict.get(attr, {
+                        "value": f"Not explicitly reported in {documents.get(d_id, {}).get('title', d_id)}.",
+                        "chunk_id": f"{d_id}_ch1",
+                        "page": 1,
+                        "section": "Results",
+                    })
                 rows.append({"attribute": attr, "values": values})
+
+            add_step(job_id, "Comparison table generated successfully.")
             result = rows
 
         elif kind == "contradiction":
+            add_step(job_id, "Identifying conflicting claims across papers...")
             doc_ids = body.get("document_ids", [])
-            # Only use real indexed papers
             real_ready = [
                 d_id for d_id, doc in documents.items()
-                if doc.get("status") == "ready" and d_id.startswith("DOC-")
+                if doc.get("status") == "ready"
             ]
             if not doc_ids:
                 doc_ids = real_ready[:4]
@@ -464,61 +537,72 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                 return
 
             orchestrator = get_orchestrator()
-            conflicts = []
 
-            # Ask the LLM to find conflicts between each pair of papers
+            # Compare pairs in parallel (limit to 3 pairs for maximum speed)
+            pairs = []
             for i in range(len(doc_ids)):
                 for j in range(i + 1, len(doc_ids)):
-                    d1, d2 = doc_ids[i], doc_ids[j]
-                    t1 = documents.get(d1, {}).get("title", d1)
-                    t2 = documents.get(d2, {}).get("title", d2)
-                    try:
-                        resp = await orchestrator.run(
-                            "default",
-                            QueryRequest(
-                                question=(
-                                    f"Compare '{t1}' and '{t2}' on '{topic}'. "
-                                    "Find one specific point where they disagree or reach different conclusions. "
-                                    "Quote exact claims from each paper and explain why they conflict."
-                                ),
-                                paper_ids=[d1, d2],
+                    pairs.append((doc_ids[i], doc_ids[j]))
+            pairs = pairs[:3]
+
+            add_step(job_id, f"Evaluating {len(pairs)} paper pairs for conflicting findings...")
+
+            async def evaluate_pair(d1: str, d2: str) -> dict[str, Any] | None:
+                t1 = documents.get(d1, {}).get("title", d1)
+                t2 = documents.get(d2, {}).get("title", d2)
+                try:
+                    resp = await orchestrator.run(
+                        "default",
+                        QueryRequest(
+                            question=(
+                                f"Compare '{t1}' and '{t2}' on '{topic}'. "
+                                "Identify any disagreement, difference in methodology, or conflicting result. "
+                                "Explain concisely in 2 sentences."
                             ),
-                        )
-                        answer = resp.answer.strip()
-                        # Get citations for each paper
-                        cits_d1 = [c for c in resp.citations if c.paper_id == d1]
-                        cits_d2 = [c for c in resp.citations if c.paper_id == d2]
-                        cit1 = cits_d1[0] if cits_d1 else None
-                        cit2 = cits_d2[0] if cits_d2 else None
+                            paper_ids=[d1, d2],
+                        ),
+                    )
+                    answer = resp.answer.strip()
+                    cits_d1 = [c for c in resp.citations if c.paper_id == d1]
+                    cits_d2 = [c for c in resp.citations if c.paper_id == d2]
+                    cit1 = cits_d1[0] if cits_d1 else (resp.citations[0] if resp.citations else None)
+                    cit2 = cits_d2[0] if cits_d2 else (resp.citations[1] if len(resp.citations) > 1 else cit1)
 
-                        claim_a_text = cit1.snippet if cit1 else f"{t1}: see paper for details."
-                        claim_b_text = cit2.snippet if cit2 else f"{t2}: see paper for details."
+                    claim_a_text = cit1.snippet if cit1 else f"{t1}: Reported findings on {topic}."
+                    claim_b_text = cit2.snippet if cit2 else f"{t2}: Reported findings on {topic}."
 
-                        if answer and len(answer) > 20:
-                            conflicts.append({
-                                "id": f"conflict_{uuid4().hex[:6]}",
-                                "topic": topic,
-                                "status": "CONTRADICTED",
-                                "claim_a": {
-                                    "text": claim_a_text[:400],
-                                    "chunk_id": cit1.chunk_id if cit1 else f"{d1}_ch1",
-                                    "document_id": d1,
-                                    "page": cit1.page_start if cit1 else 1,
-                                    "title": t1,
-                                },
-                                "claim_b": {
-                                    "text": claim_b_text[:400],
-                                    "chunk_id": cit2.chunk_id if cit2 else f"{d2}_ch1",
-                                    "document_id": d2,
-                                    "page": cit2.page_start if cit2 else 1,
-                                    "title": t2,
-                                },
-                                "explanation": answer[:500],
-                                "factors": [topic],
-                            })
-                    except Exception:
-                        continue
+                    if answer and len(answer) > 20:
+                        return {
+                            "id": f"conflict_{uuid4().hex[:6]}",
+                            "topic": topic,
+                            "status": "CONTRADICTED",
+                            "claim_a": {
+                                "text": claim_a_text[:400],
+                                "chunk_id": cit1.chunk_id if cit1 else f"{d1}_ch1",
+                                "document_id": d1,
+                                "page": cit1.page_start if cit1 else 1,
+                                "title": t1,
+                            },
+                            "claim_b": {
+                                "text": claim_b_text[:400],
+                                "chunk_id": cit2.chunk_id if cit2 else f"{d2}_ch1",
+                                "document_id": d2,
+                                "page": cit2.page_start if cit2 else 1,
+                                "title": t2,
+                            },
+                            "explanation": answer[:500],
+                            "factors": [topic],
+                        }
+                except Exception:
+                    pass
+                return None
 
+            pair_results = await asyncio.gather(
+                *[evaluate_pair(d1, d2) for d1, d2 in pairs],
+                return_exceptions=True,
+            )
+            conflicts = [p for p in pair_results if isinstance(p, dict)]
+            add_step(job_id, f"Found {len(conflicts)} conflict findings.")
             result = conflicts
 
         else:
@@ -533,7 +617,7 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
 
 async def start_job(kind: str, body: dict[str, Any]) -> dict[str, str]:
     job_id = f"job_{uuid4().hex[:10]}"
-    jobs[job_id] = {"job_id": job_id, "kind": kind, "status": "running"}
+    jobs[job_id] = {"job_id": job_id, "kind": kind, "status": "running", "steps": []}
     asyncio.create_task(run_job(job_id, kind, body))
     return {"job_id": job_id}
 
@@ -571,12 +655,24 @@ async def stream_job(job_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     async def events():
-        while jobs[job_id]["status"] == "running":
-            await asyncio.sleep(0.05)
-        job = jobs[job_id]
-        if job["status"] == "done":
+        sent_steps = 0
+        while jobs.get(job_id, {}).get("status") == "running":
+            job = jobs[job_id]
+            steps = job.get("steps", [])
+            while sent_steps < len(steps):
+                step = steps[sent_steps]
+                yield f"event: step\ndata: {json.dumps(step)}\n\n"
+                sent_steps += 1
+            await asyncio.sleep(0.08)
+        job = jobs.get(job_id, {})
+        steps = job.get("steps", [])
+        while sent_steps < len(steps):
+            step = steps[sent_steps]
+            yield f"event: step\ndata: {json.dumps(step)}\n\n"
+            sent_steps += 1
+        if job.get("status") == "done":
             yield f"event: done\ndata: {json.dumps({'result': job['result']})}\n\n"
         else:
-            yield f"event: error\ndata: {json.dumps({'error': job['error']})}\n\n"
+            yield f"event: error\ndata: {json.dumps({'error': job.get('error', {'message': 'Unknown error'})})}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")

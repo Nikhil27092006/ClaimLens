@@ -28,10 +28,10 @@ class Settings(BaseSettings):
     nvidia_api_key: str | None = None
     nvidia_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
 
-    top_k_dense: int = Field(default=25, ge=1, le=100)
-    top_k_sparse: int = Field(default=25, ge=1, le=100)
-    top_k_reranked: int = Field(default=8, ge=1, le=50)
-    max_context_tokens: int = Field(default=6000, ge=500)
+    top_k_dense: int = Field(default=20, ge=1, le=100)
+    top_k_sparse: int = Field(default=20, ge=1, le=100)
+    top_k_reranked: int = Field(default=6, ge=1, le=50)
+    max_context_tokens: int = Field(default=4000, ge=500)
     min_relevance_score: float = Field(default=0.35, ge=0.0, le=1.0)
     max_question_length: int = Field(default=4000, ge=100, le=20000)
     max_papers_per_query: int = Field(default=20, ge=1, le=100)

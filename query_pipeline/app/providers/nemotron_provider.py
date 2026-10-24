@@ -33,16 +33,17 @@ class OpenAICompatibleGenerationProvider:
                 model=self.model,
                 temperature=0.1,
                 top_p=0.95,
-                max_tokens=16384,
-                extra_body={"chat_template_kwargs": {"enable_thinking": True}},
-                stream=True,
+                max_tokens=1500,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                stream=False,
                 messages=[
                     {
                         "role": "system",
                         "content": (
-                            "Answer only using facts from the supplied evidence. Every factual "
-                            "claim in 'claims' must cite the exact source ID(s) where that fact appears "
-                            "(e.g. [\"S1\"]). Return ONLY a JSON object with keys: answer (string), "
+                            "Answer directly and concisely using only facts from the supplied evidence. "
+                            "Keep the answer focused (1-2 paragraphs). Extract 2-4 key factual claims. "
+                            "Every factual claim in 'claims' must cite the exact source ID(s) where that fact appears "
+                            "(e.g. [\"S1\"]). Return ONLY a valid JSON object with keys: answer (string), "
                             "claims (array of objects with text, source_ids (array of strings), "
                             "claim_type ('fact'), confidence (1.0)), and uncertainties (array of strings)."
                         ),
@@ -53,14 +54,7 @@ class OpenAICompatibleGenerationProvider:
                     },
                 ],
             )
-            content_chunks: list[str] = []
-            async for chunk in completion:
-                if not chunk.choices:
-                    continue
-                content = chunk.choices[0].delta.content
-                if content is not None:
-                    content_chunks.append(content)
-            content = "".join(content_chunks)
+            content = completion.choices[0].message.content or ""
         except Exception as exc:
             raise ConnectionError("Nemotron generation request failed") from exc
 
