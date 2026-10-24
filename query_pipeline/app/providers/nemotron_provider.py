@@ -40,11 +40,11 @@ class OpenAICompatibleGenerationProvider:
                     {
                         "role": "system",
                         "content": (
-                            "Answer only from supplied evidence. Every factual "
-                            "claim must cite a supplied source ID. Return only "
-                            "a JSON object with keys: answer (string), claims (array of objects "
-                            "with text, source_ids (e.g. [\"S1\"]), claim_type ('fact'), confidence (1.0)), "
-                            "and uncertainties (array of strings)."
+                            "Answer only using facts from the supplied evidence. Every factual "
+                            "claim in 'claims' must cite the exact source ID(s) where that fact appears "
+                            "(e.g. [\"S1\"]). Return ONLY a JSON object with keys: answer (string), "
+                            "claims (array of objects with text, source_ids (array of strings), "
+                            "claim_type ('fact'), confidence (1.0)), and uncertainties (array of strings)."
                         ),
                     },
                     {

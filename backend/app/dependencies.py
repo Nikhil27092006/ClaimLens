@@ -23,18 +23,9 @@ def get_orchestrator() -> QueryOrchestrator:
             raise RuntimeError("Real embedding provider is not configured")
         if not settings.nvidia_api_key or not settings.nvidia_model:
             raise RuntimeError("Real generation provider is not configured")
-        from pathlib import Path
+        from backend.app.services.qdrant import get_shared_qdrant_client
 
-        try:
-            qdrant = QdrantClient(
-                url=settings.qdrant_url,
-                api_key=settings.qdrant_api_key or None,
-                timeout=2.0,
-            )
-            qdrant.get_collections()
-        except Exception:
-            Path("storage/qdrant").mkdir(parents=True, exist_ok=True)
-            qdrant = QdrantClient(path="storage/qdrant")
+        qdrant = get_shared_qdrant_client(settings)
 
         return QueryOrchestrator(
             settings=settings,

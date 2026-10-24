@@ -147,8 +147,42 @@ def seed_sample_documents_if_empty() -> None:
             continue
 
 
-# Seed initial documents
+def load_persisted_documents() -> None:
+    path = Path("storage/bm25/index.sqlite3")
+    if not path.exists():
+        return
+    try:
+        import sqlite3
+        con = sqlite3.connect(str(path))
+        cur = con.cursor()
+        cur.execute("SELECT DISTINCT paper_id, paper_title FROM chunks_fts")
+        for pid, title in cur.fetchall():
+            if pid not in documents:
+                clean_title = (title or pid).replace("_", " ")
+                documents[pid] = {
+                    "document_id": pid,
+                    "title": clean_title,
+                    "filename": f"{title or pid}.pdf",
+                    "authors": "Uploaded Paper",
+                    "year": 2025,
+                    "pages": 10,
+                    "chunks": 25,
+                    "status": "ready",
+                    "source": "upload",
+                    "progress": 100,
+                    "error": None,
+                    "uploaded_at": datetime.now(UTC).isoformat(),
+                    "sections": ["1 INTRODUCTION", "2 METHOD", "3 RESULTS", "4 CONCLUSION"],
+                }
+                publish_indexed_paper("default", pid)
+        con.close()
+    except Exception:
+        pass
+
+
+# Seed initial documents and load persisted indexed papers
 seed_sample_documents_if_empty()
+load_persisted_documents()
 
 
 @router.get("/documents")
