@@ -40,111 +40,8 @@ def document(document_id: str, filename: str) -> dict[str, Any]:
 
 
 def seed_sample_documents_if_empty() -> None:
-    """Pre-load sample documents and chunks so the library is immediately usable."""
-    if documents:
-        return
-    mocks_dir = Path("frontend/src/mocks/pdfs")
-    if not mocks_dir.exists():
-        return
-
-    sample_meta = {
-        "DOC001": {
-            "title": "Low-Rank Adapters at Scale",
-            "authors": "Rao, Lindqvist et al.",
-            "year": 2025,
-            "filename": "low-rank-adapters-at-scale.pdf",
-            "pages": 26,
-            "chunks": 184,
-            "sections": ["1 INTRODUCTION", "2 METHOD", "3 EXPERIMENTAL SETUP", "4 RESULTS", "5 ANALYSIS", "6 RELATED WORK", "7 CONCLUSION"],
-        },
-        "DOC002": {
-            "title": "Quantized Adapters for Open Models",
-            "authors": "Okafor, Chen et al.",
-            "year": 2024,
-            "filename": "quantized-adapters-for-open-models.pdf",
-            "pages": 26,
-            "chunks": 171,
-            "sections": ["1 INTRODUCTION", "2 BACKGROUND", "3 METHOD", "4 RESULTS", "5 ANALYSIS", "6 LIMITATIONS", "7 CONCLUSION"],
-        },
-        "DOC003": {
-            "title": "Decomposed Weight Updates",
-            "authors": "Varga, Iyer et al.",
-            "year": 2025,
-            "filename": "decomposed-weight-updates.pdf",
-            "pages": 21,
-            "chunks": 140,
-            "sections": ["1 INTRODUCTION", "2 METHOD", "3 EXPERIMENTAL SETUP", "4 RESULTS", "5 CONCLUSION"],
-        },
-        "DOC004": {
-            "title": "On the Limits of Parameter-Efficient Tuning",
-            "authors": "Zhao, Morales et al.",
-            "year": 2024,
-            "filename": "on-the-limits-of-parameter-efficient-tuning.pdf",
-            "pages": 28,
-            "chunks": 196,
-            "sections": ["1 INTRODUCTION", "2 THEORETICAL LIMITS", "3 BENCHMARKS", "4 DISCUSSION"],
-        },
-        "DOC005": {
-            "title": "Adapter Benchmarks in the Wild",
-            "authors": "Kim, Dupont et al.",
-            "year": 2024,
-            "filename": "adapter-benchmarks-in-the-wild.pdf",
-            "pages": 24,
-            "chunks": 162,
-            "sections": ["1 INTRODUCTION", "2 EVALUATION METHODOLOGY", "3 RESULTS", "4 RELATED WORK"],
-        },
-        "DOC006": {
-            "title": "Rank Scaling in LoRA Variants",
-            "authors": "Nair, Solberg et al.",
-            "year": 2025,
-            "filename": "rank-scaling-in-lora-variants.pdf",
-            "pages": 25,
-            "chunks": 175,
-            "sections": ["1 INTRODUCTION", "2 RANK SCALING DYNAMICS", "3 EMPIRICAL EVALUATION", "4 CONCLUSION"],
-        },
-    }
-
-    for pdf_path in mocks_dir.glob("*.pdf"):
-        doc_id = pdf_path.stem
-        meta = sample_meta.get(doc_id, {
-            "title": pdf_path.stem,
-            "authors": "Research Team",
-            "year": 2025,
-            "filename": pdf_path.name,
-            "pages": 20,
-            "chunks": 100,
-            "sections": ["1 INTRODUCTION", "2 METHOD", "3 RESULTS", "4 CONCLUSION"],
-        })
-        try:
-            content = pdf_path.read_bytes()
-            files[doc_id] = content
-            documents[doc_id] = {
-                "document_id": doc_id,
-                "title": meta["title"],
-                "filename": meta["filename"],
-                "authors": meta["authors"],
-                "year": meta["year"],
-                "pages": meta["pages"],
-                "chunks": meta["chunks"],
-                "status": "ready",
-                "source": "upload",
-                "progress": 100,
-                "error": None,
-                "uploaded_at": datetime.now(UTC).isoformat(),
-                "sections": meta["sections"],
-            }
-            publish_indexed_paper("default", doc_id)
-
-            # Prepopulate key passage chunks
-            chunks_store[f"{doc_id}_ch1"] = {
-                "chunk_id": f"{doc_id}_ch1",
-                "document_id": doc_id,
-                "page": 1,
-                "section": "1 INTRODUCTION",
-                "text": f"{meta['title']} provides foundational findings on adapter scaling and efficiency.",
-            }
-        except Exception:
-            continue
+    """No-op: mock documents removed. Only real uploaded/indexed papers are shown."""
+    pass
 
 
 def load_persisted_documents() -> None:
@@ -155,26 +52,48 @@ def load_persisted_documents() -> None:
         import sqlite3
         con = sqlite3.connect(str(path))
         cur = con.cursor()
-        cur.execute("SELECT DISTINCT paper_id, paper_title FROM chunks_fts")
-        for pid, title in cur.fetchall():
-            if pid not in documents:
-                clean_title = (title or pid).replace("_", " ")
-                documents[pid] = {
-                    "document_id": pid,
-                    "title": clean_title,
-                    "filename": f"{title or pid}.pdf",
-                    "authors": "Uploaded Paper",
-                    "year": 2025,
-                    "pages": 10,
-                    "chunks": 25,
-                    "status": "ready",
-                    "source": "upload",
-                    "progress": 100,
-                    "error": None,
-                    "uploaded_at": datetime.now(UTC).isoformat(),
-                    "sections": ["1 INTRODUCTION", "2 METHOD", "3 RESULTS", "4 CONCLUSION"],
-                }
-                publish_indexed_paper("default", pid)
+        # Get per-paper stats: title, chunk count, max page
+        cur.execute(
+            """
+            SELECT paper_id, paper_title,
+                   COUNT(*) AS chunk_count,
+                   MAX(CAST(page_start AS INTEGER)) AS max_page
+            FROM chunks_fts
+            GROUP BY paper_id, paper_title
+            """
+        )
+        rows = cur.fetchall()
+        for pid, title, chunk_count, max_page in rows:
+            # Only load real indexed papers (DOC- prefix), skip legacy mock IDs
+            if not pid.startswith("DOC-"):
+                continue
+            if pid in documents:
+                continue
+            # Fetch distinct sections for this paper
+            cur.execute(
+                "SELECT DISTINCT section FROM chunks_fts WHERE paper_id = ? AND section != ''",
+                (pid,),
+            )
+            sections = sorted(row[0] for row in cur.fetchall()) or [
+                "Introduction", "Methods", "Results", "Conclusion"
+            ]
+            clean_title = (title or pid).replace("_", " ")
+            documents[pid] = {
+                "document_id": pid,
+                "title": clean_title,
+                "filename": f"{clean_title}.pdf",
+                "authors": "Uploaded Paper",
+                "year": 2025,
+                "pages": int(max_page or 1),
+                "chunks": int(chunk_count or 0),
+                "status": "ready",
+                "source": "upload",
+                "progress": 100,
+                "error": None,
+                "uploaded_at": datetime.now(UTC).isoformat(),
+                "sections": sections,
+            }
+            publish_indexed_paper("default", pid)
         con.close()
     except Exception:
         pass
@@ -217,8 +136,9 @@ async def delete_document(document_id: str) -> None:
 async def get_chunk(chunk_id: str) -> dict[str, Any]:
     chunk = chunks_store.get(chunk_id)
     if chunk is None:
-        # Fallback synthesized chunk if not indexed yet
-        doc_id = chunk_id.split("_")[0] if "_" in chunk_id else "DOC001"
+        # Derive doc_id from chunk prefix (e.g. DOC-abc123_ch42 → DOC-abc123)
+        parts = chunk_id.rsplit("_", 1)
+        doc_id = parts[0] if len(parts) == 2 and parts[0].startswith("DOC-") else chunk_id
         return {
             "chunk_id": chunk_id,
             "document_id": doc_id,
@@ -240,7 +160,24 @@ async def index_uploaded(document_id: str) -> None:
             settings=get_settings(),
         )
         publish_indexed_paper("default", document_id)
-        item.update(status="ready", progress=100, chunks=result.qdrant_points)
+
+        # Derive real page count and unique section names from stored chunks
+        doc_chunks = [
+            c for c in chunks_store.values()
+            if isinstance(c, dict) and c.get("document_id") == document_id
+        ]
+        max_page = max((c.get("page", 1) for c in doc_chunks), default=1)
+        sections = sorted({
+            c["section"] for c in doc_chunks if c.get("section")
+        })
+
+        item.update(
+            status="ready",
+            progress=100,
+            chunks=result.qdrant_points,
+            pages=max_page,
+            sections=sections or ["Introduction", "Methods", "Results", "Conclusion"],
+        )
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
         item.update(status="failed", error=str(exc), progress=0)
 
@@ -310,17 +247,24 @@ async def retry_document(
     return documents[document_id]
 
 
-async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:
+async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa: PLR0912, PLR0915
     job = jobs[job_id]
     try:
         if kind == "query":
             orchestrator = get_orchestrator()
             paper_ids = body.get("document_ids", [])
-            # Fallback to ready documents if none selected
+            # Fallback to real indexed (DOC-prefixed) ready documents only — never mock stubs
             if not paper_ids:
-                paper_ids = [d_id for d_id, doc in documents.items() if doc.get("status") == "ready"]
+                paper_ids = [
+                    d_id for d_id, doc in documents.items()
+                    if doc.get("status") == "ready" and d_id.startswith("DOC-")
+                ]
             if not paper_ids:
-                paper_ids = ["DOC001"]
+                job.update(
+                    status="error",
+                    error={"code": "NO_PAPERS", "message": "No indexed papers available. Upload a PDF first."},
+                )
+                return
 
             response = await orchestrator.run(
                 "default",
@@ -342,7 +286,6 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:
                             "highlight": cit.snippet[:80],
                         })
                 if not evidence_items and response.citations:
-                    # Provide first citation as fallback evidence
                     first_cit = response.citations[0]
                     evidence_items.append({
                         "chunk_id": first_cit.chunk_id,
@@ -371,122 +314,211 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:
 
         elif kind == "check":
             claim = body.get("claim", "")
-            ready_papers = [d for d in documents.values() if d.get("status") == "ready"]
-            paper_ids = [d["document_id"] for d in ready_papers[:5]] or ["DOC001"]
+            # Only use real indexed papers
+            ready_papers = [
+                d for d in documents.values()
+                if d.get("status") == "ready" and d["document_id"].startswith("DOC-")
+            ]
+            paper_ids = [d["document_id"] for d in ready_papers[:5]]
 
             orchestrator = get_orchestrator()
             answer_summary = ""
             supports = []
             contradicts = []
-            partial = []
+            partial: list[dict[str, Any]] = []
             insufficient = []
 
-            try:
-                response = await orchestrator.run(
-                    "default",
-                    QueryRequest(
-                        question=f"Evaluate whether the literature supports or contradicts this claim: {claim}",
-                        paper_ids=paper_ids,
-                    ),
-                )
-                answer_summary = response.answer
-                for cit in response.citations:
-                    item = {
-                        "chunk_id": cit.chunk_id,
-                        "document_id": cit.paper_id,
-                        "page": cit.page_start,
-                        "section": cit.section or "Section",
-                        "quote": cit.snippet,
-                        "highlight": cit.snippet[:80],
-                    }
-                    if cit.validation_status == "valid":
-                        supports.append(item)
-                    else:
-                        insufficient.append(item)
-            except Exception:
-                pass
-
-            if not answer_summary:
-                answer_summary = (
-                    f"Analysis of {claim}: The literature presents nuanced findings across benchmark datasets. "
-                    "Empirical results vary depending on quantization precision and model architecture."
-                )
+            if paper_ids:
+                try:
+                    response = await orchestrator.run(
+                        "default",
+                        QueryRequest(
+                            question=(
+                                f"Evaluate whether the literature supports or contradicts this claim: {claim}. "
+                                "Provide a direct answer citing relevant passages."
+                            ),
+                            paper_ids=paper_ids,
+                        ),
+                    )
+                    answer_summary = response.answer
+                    for cit in response.citations:
+                        item = {
+                            "chunk_id": cit.chunk_id,
+                            "document_id": cit.paper_id,
+                            "page": cit.page_start,
+                            "section": cit.section or "Section",
+                            "quote": cit.snippet,
+                            "highlight": cit.snippet[:80],
+                        }
+                        if cit.validation_status == "valid":
+                            supports.append(item)
+                        else:
+                            insufficient.append(item)
+                except Exception as exc:
+                    answer_summary = f"Could not evaluate claim: {exc}"
+            else:
+                answer_summary = "No indexed papers available. Upload a PDF first."
 
             total_q = len(supports) + len(contradicts) + len(partial) + len(insufficient)
             result = {
                 "claim": claim,
-                "papers": ready_papers or list(documents.values()),
+                "papers": ready_papers,
                 "supports": supports,
                 "contradicts": contradicts,
                 "partial": partial,
                 "insufficient": insufficient,
                 "summary": answer_summary,
-                "summary_highlight": "nuanced findings across benchmark datasets",
+                "summary_highlight": "",
                 "verified_quotes": len(supports),
-                "total_quotes": total_q if total_q > 0 else 1,
+                "total_quotes": max(total_q, 1),
                 "sources": [
-                    {"name": "arXiv", "count": len(documents) or 6},
-                    {"name": "Semantic Scholar", "count": 14},
-                    {"name": "Tavily", "count": 6},
+                    {"name": "Uploaded Papers", "count": len(ready_papers)},
                 ],
             }
 
         elif kind == "compare":
             doc_ids = body.get("document_ids", [])
+            # Only compare real indexed papers
+            real_ready = [
+                d_id for d_id, doc in documents.items()
+                if doc.get("status") == "ready" and d_id.startswith("DOC-")
+            ]
             if not doc_ids:
-                doc_ids = list(documents.keys())[:3]
+                doc_ids = real_ready[:4]
+            else:
+                # Filter to only those that are actually indexed
+                doc_ids = [d for d in doc_ids if d in real_ready]
+
+            if len(doc_ids) < 2:
+                job.update(
+                    status="error",
+                    error={"code": "NOT_ENOUGH_PAPERS",
+                           "message": "Need at least 2 indexed papers to compare. Upload more PDFs."},
+                )
+                return
+
             attributes = body.get("attributes", [
-                "Architecture & Adapters",
-                "Benchmark Accuracy",
-                "Memory & Efficiency",
-                "Key Limitation",
+                "Core Method",
+                "Benchmark Results",
+                "Computational Cost",
+                "Key Contribution",
+                "Limitations",
             ])
+
+            orchestrator = get_orchestrator()
             rows = []
             for attr in attributes:
-                values = {}
+                values: dict[str, Any] = {}
                 for d_id in doc_ids:
                     doc = documents.get(d_id, {})
                     title = doc.get("title", d_id)
+                    try:
+                        resp = await orchestrator.run(
+                            "default",
+                            QueryRequest(
+                                question=(
+                                    f"In one sentence, what does '{title}' report about '{attr}'? "
+                                    "Be specific with numbers if available."
+                                ),
+                                paper_ids=[d_id],
+                            ),
+                        )
+                        cell_text = resp.answer.strip().split("\n")[0][:300]
+                        chunk_id = resp.citations[0].chunk_id if resp.citations else f"{d_id}_ch1"
+                        page = resp.citations[0].page_start if resp.citations else 1
+                        section = resp.citations[0].section if resp.citations else "Results"
+                    except Exception:
+                        cell_text = f"Information about {attr} not found in {title}."
+                        chunk_id = f"{d_id}_ch1"
+                        page = 1
+                        section = "Results"
                     values[d_id] = {
-                        "value": f"{attr} reported in {title}",
-                        "chunk_id": f"{d_id}_ch1",
-                        "page": 1,
-                        "section": "RESULTS",
+                        "value": cell_text,
+                        "chunk_id": chunk_id,
+                        "page": page,
+                        "section": section or "Results",
                     }
                 rows.append({"attribute": attr, "values": values})
             result = rows
 
         elif kind == "contradiction":
             doc_ids = body.get("document_ids", [])
+            # Only use real indexed papers
+            real_ready = [
+                d_id for d_id, doc in documents.items()
+                if doc.get("status") == "ready" and d_id.startswith("DOC-")
+            ]
             if not doc_ids:
-                doc_ids = list(documents.keys())[:2]
-            topic = body.get("topic", "Performance & Accuracy Tradeoffs")
+                doc_ids = real_ready[:4]
+            else:
+                doc_ids = [d for d in doc_ids if d in real_ready]
+
+            topic = body.get("topic", "") or "main findings, methods, and conclusions"
+
+            if len(doc_ids) < 2:
+                job.update(
+                    status="error",
+                    error={"code": "NOT_ENOUGH_PAPERS",
+                           "message": "Need at least 2 indexed papers to find conflicts."},
+                )
+                return
+
+            orchestrator = get_orchestrator()
             conflicts = []
-            if len(doc_ids) >= 2:
-                d1, d2 = doc_ids[0], doc_ids[1]
-                t1 = documents.get(d1, {}).get("title", d1)
-                t2 = documents.get(d2, {}).get("title", d2)
-                conflicts.append({
-                    "id": f"conflict_{uuid4().hex[:6]}",
-                    "topic": topic,
-                    "status": "CONTRADICTED",
-                    "claim_a": {
-                        "text": f"{t1} reports parity with full fine-tuning without significant loss.",
-                        "chunk_id": f"{d1}_ch1",
-                        "document_id": d1,
-                        "page": 1,
-                        "title": t1,
-                    },
-                    "claim_b": {
-                        "text": f"{t2} observes notable degradations on complex mathematical reasoning tasks.",
-                        "chunk_id": f"{d2}_ch1",
-                        "document_id": d2,
-                        "page": 2,
-                        "title": t2,
-                    },
-                    "explanation": "Discrepancy stems from differences in benchmark selection and rank scaling parameters.",
-                    "factors": ["Quantization precision", "Evaluation metric"],
-                })
+
+            # Ask the LLM to find conflicts between each pair of papers
+            for i in range(len(doc_ids)):
+                for j in range(i + 1, len(doc_ids)):
+                    d1, d2 = doc_ids[i], doc_ids[j]
+                    t1 = documents.get(d1, {}).get("title", d1)
+                    t2 = documents.get(d2, {}).get("title", d2)
+                    try:
+                        resp = await orchestrator.run(
+                            "default",
+                            QueryRequest(
+                                question=(
+                                    f"Compare '{t1}' and '{t2}' on '{topic}'. "
+                                    "Find one specific point where they disagree or reach different conclusions. "
+                                    "Quote exact claims from each paper and explain why they conflict."
+                                ),
+                                paper_ids=[d1, d2],
+                            ),
+                        )
+                        answer = resp.answer.strip()
+                        # Get citations for each paper
+                        cits_d1 = [c for c in resp.citations if c.paper_id == d1]
+                        cits_d2 = [c for c in resp.citations if c.paper_id == d2]
+                        cit1 = cits_d1[0] if cits_d1 else None
+                        cit2 = cits_d2[0] if cits_d2 else None
+
+                        claim_a_text = cit1.snippet if cit1 else f"{t1}: see paper for details."
+                        claim_b_text = cit2.snippet if cit2 else f"{t2}: see paper for details."
+
+                        if answer and len(answer) > 20:
+                            conflicts.append({
+                                "id": f"conflict_{uuid4().hex[:6]}",
+                                "topic": topic,
+                                "status": "CONTRADICTED",
+                                "claim_a": {
+                                    "text": claim_a_text[:400],
+                                    "chunk_id": cit1.chunk_id if cit1 else f"{d1}_ch1",
+                                    "document_id": d1,
+                                    "page": cit1.page_start if cit1 else 1,
+                                    "title": t1,
+                                },
+                                "claim_b": {
+                                    "text": claim_b_text[:400],
+                                    "chunk_id": cit2.chunk_id if cit2 else f"{d2}_ch1",
+                                    "document_id": d2,
+                                    "page": cit2.page_start if cit2 else 1,
+                                    "title": t2,
+                                },
+                                "explanation": answer[:500],
+                                "factors": [topic],
+                            })
+                    except Exception:
+                        continue
+
             result = conflicts
 
         else:
