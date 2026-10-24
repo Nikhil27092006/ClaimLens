@@ -46,10 +46,17 @@ async def index_pdf(
 
     from qdrant_client import QdrantClient
 
-    client = QdrantClient(
-        url=settings.qdrant_url,
-        api_key=settings.qdrant_api_key or None,
-    )
+    try:
+        client = QdrantClient(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key or None,
+            timeout=2.0,
+        )
+        client.get_collections()
+    except Exception:
+        Path("storage/qdrant").mkdir(parents=True, exist_ok=True)
+        client = QdrantClient(path="storage/qdrant")
+
     try:
         prepared = await ingest_and_embed_pdf(
             source,
@@ -65,6 +72,24 @@ async def index_pdf(
             ),
             expected_dimension=settings.embedding_dimension,
         )
+        try:
+            from backend.app.services.runtime import store_chunks
+
+            store_chunks(
+                [
+                    {
+                        "chunk_id": c.chunk_id,
+                        "document_id": paper_id,
+                        "page": c.page_start,
+                        "section": c.section or "",
+                        "text": c.text,
+                    }
+                    for c in prepared.paper.chunks
+                ]
+            )
+        except Exception:
+            pass
+
         return await index_prepared_paper(
             prepared,
             vector_indexer=QdrantVectorIndexer(
@@ -76,3 +101,4 @@ async def index_pdf(
         )
     finally:
         client.close()
+

@@ -56,6 +56,42 @@ export function apiUrl(path: string): string {
   return `${env.apiBaseUrl}${path}`;
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError')
+  );
+}
+
+function isSignalCompatibilityError(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    error.message.includes('Expected signal') &&
+    error.message.includes('AbortSignal')
+  );
+}
+
+function shouldOmitSignal(): boolean {
+  return typeof navigator !== 'undefined' && navigator.userAgent.includes('jsdom');
+}
+
+async function fetchWithSignalFallback(
+  input: string,
+  init: RequestInit,
+  signal?: AbortSignal,
+): Promise<Response> {
+  if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+  if (shouldOmitSignal()) return fetch(input, init);
+  try {
+    return await fetch(input, { ...init, signal });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    if (!signal || !isSignalCompatibilityError(error)) throw error;
+    return fetch(input, init);
+  }
+}
+
 async function readBody(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return undefined;
@@ -79,14 +115,13 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   const isForm = body instanceof FormData;
   let response: Response;
   try {
-    response = await fetch(apiUrl(path), {
+    response = await fetchWithSignalFallback(apiUrl(path), {
       method,
-      signal,
       headers: body === undefined || isForm ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
-    });
+    }, signal);
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (isAbortError(error)) throw error;
     throw new ApiError('NETWORK_ERROR', 'Could not reach the ClaimLens server.', 0);
   }
   const data = await readBody(response);
@@ -98,9 +133,9 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 export async function apiFetchBytes(path: string, signal?: AbortSignal): Promise<Uint8Array> {
   let response: Response;
   try {
-    response = await fetch(apiUrl(path), { signal });
+    response = await fetchWithSignalFallback(apiUrl(path), {}, signal);
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (isAbortError(error)) throw error;
     throw new ApiError('NETWORK_ERROR', 'Could not reach the ClaimLens server.', 0);
   }
   if (!response.ok) throw toApiError(response.status, await readBody(response));

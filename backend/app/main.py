@@ -1,16 +1,26 @@
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes.health import router as health_router
+from backend.app.api.routes.frontend_compat import router as frontend_compat_router
 from backend.app.api.routes.queries import router as query_router
 from backend.app.config import get_settings
 from backend.app.observability.logging import configure_logging
 
 app = FastAPI(title="ResearchLens Query Service", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 configure_logging(get_settings().log_level)
 app.include_router(health_router)
 app.include_router(query_router)
+app.include_router(frontend_compat_router)
 
 
 @app.get("/")

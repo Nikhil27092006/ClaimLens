@@ -24,11 +24,9 @@ class Settings(BaseSettings):
     reranker_api_key: str | None = None
     reranker_model: str | None = None
 
-    nebius_base_url: str = (
-        "https://api.tokenfactory.us-central1.nebius.com/v1/"
-    )
-    nebius_api_key: str | None = None
-    nebius_model: str | None = None
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_api_key: str | None = None
+    nvidia_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
 
     top_k_dense: int = Field(default=25, ge=1, le=100)
     top_k_sparse: int = Field(default=25, ge=1, le=100)
@@ -57,6 +55,12 @@ class Settings(BaseSettings):
             raise ValueError("Fake providers are not allowed in production")
         if self.embedding_dimension < 1:
             raise ValueError("Embedding dimension must be positive")
+        # NVIDIA's embedding and chat endpoints commonly share one credential.
+        # Keep the separate setting available for deployments with distinct keys.
+        if not self.embedding_api_key:
+            self.embedding_api_key = self.nvidia_api_key
+        if not self.embedding_base_url:
+            self.embedding_base_url = self.nvidia_base_url
         return self
 
 
