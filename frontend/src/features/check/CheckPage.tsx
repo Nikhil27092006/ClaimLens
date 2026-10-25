@@ -16,7 +16,6 @@ import { EvidenceDrawer } from '@/features/evidence/EvidenceDrawer';
 import { useEvidenceViewer } from '@/features/evidence/useEvidenceViewer';
 import { sourceLabel } from '@/features/library/format';
 import { cn } from '@/lib/cn';
-import { env } from '@/lib/env';
 import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { DEFAULT_SOURCE_SETTINGS, EditSources } from './EditSources';
 import { EvidenceColumns, EvidenceColumnsSkeleton } from './EvidenceColumns';
@@ -62,7 +61,7 @@ export function CheckPage() {
   const stream = useJobStream<CheckResult>(jobId);
   const start = useStartCheck();
   const viewer = useEvidenceViewer();
-  const [claim, setClaim] = useState(() => recent?.claim ?? DEMO_CLAIM);
+  const [claim, setClaim] = useState(() => recent?.claim ?? '');
   const [claimError, setClaimError] = useState<string>();
   const [settings, setSettings] = useState(DEFAULT_SOURCE_SETTINGS);
 

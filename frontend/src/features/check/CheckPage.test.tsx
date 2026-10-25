@@ -5,12 +5,12 @@ import { mockSettings } from '@/mocks/settings';
 import { renderApp } from '@/test/render';
 
 describe('CheckPage', () => {
-  it('starts with the demo claim and no verdict', async () => {
+  it('starts with an empty claim and no verdict', async () => {
     renderApp('/');
 
-    expect(await screen.findByRole('textbox', { name: 'Claim' })).toHaveValue(
-      '“LoRA matches full fine-tuning on math and coding benchmarks.”',
-    );
+    const textarea = await screen.findByRole('textbox', { name: 'Claim' });
+    expect(textarea).toHaveValue('');
+    expect(screen.getByPlaceholderText('Paste a research claim…')).toBe(textarea);
     expect(
       screen.getByRole('heading', { name: 'Check a claim against the literature' }),
     ).toBeVisible();
@@ -20,7 +20,9 @@ describe('CheckPage', () => {
     const user = userEvent.setup();
     const { router } = renderApp('/');
 
-    await user.click(await screen.findByRole('button', { name: 'Check claim →' }));
+    const textarea = await screen.findByRole('textbox', { name: 'Claim' });
+    await user.type(textarea, 'LoRA matches full fine-tuning on math and coding benchmarks.');
+    await user.click(screen.getByRole('button', { name: 'Check claim →' }));
 
     expect(await screen.findByText('Contested.')).toBeInTheDocument();
     expect(router.state.location.search).toBe('?job=job_0042');
@@ -43,7 +45,9 @@ describe('CheckPage', () => {
     const user = userEvent.setup();
     renderApp('/');
 
-    await user.click(await screen.findByRole('button', { name: 'Check claim →' }));
+    const textarea = await screen.findByRole('textbox', { name: 'Claim' });
+    await user.type(textarea, 'LoRA matches full fine-tuning on math and coding benchmarks.');
+    await user.click(screen.getByRole('button', { name: 'Check claim →' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('The check stopped · UPSTREAM_ERROR');
 
@@ -55,7 +59,10 @@ describe('CheckPage', () => {
   it('opens the cited page in the evidence drawer and returns focus on Esc', async () => {
     const user = userEvent.setup();
     const { router } = renderApp('/');
-    await user.click(await screen.findByRole('button', { name: 'Check claim →' }));
+
+    const textarea = await screen.findByRole('textbox', { name: 'Claim' });
+    await user.type(textarea, 'LoRA matches full fine-tuning on math and coding benchmarks.');
+    await user.click(screen.getByRole('button', { name: 'Check claim →' }));
     await screen.findByText('Contested.');
 
     const open = screen.getByRole('button', {
@@ -77,8 +84,7 @@ describe('CheckPage', () => {
     const user = userEvent.setup();
     renderApp('/');
 
-    await user.clear(await screen.findByRole('textbox', { name: 'Claim' }));
-    await user.click(screen.getByRole('button', { name: 'Check claim →' }));
+    await user.click(await screen.findByRole('button', { name: 'Check claim →' }));
     expect(screen.getByRole('textbox', { name: 'Claim' })).toHaveAccessibleDescription(
       'Enter a claim to check.',
     );
