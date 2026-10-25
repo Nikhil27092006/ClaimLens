@@ -31,7 +31,7 @@ describe('CheckPage', () => {
     expect(screen.getByRole('heading', { name: 'Supports · 3' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Contradicts · 2' })).toBeInTheDocument();
     expect(screen.getByText('6 papers read in full')).toBeInTheDocument();
-    expect(screen.getByText('Semantic Scholar · 14')).toBeInTheDocument();
+    expect(screen.getByText('Semantic Embeddings · 14')).toBeInTheDocument();
     expect(screen.getByText(/31 \/ 31 quotes verified on page\./)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Re-check claim →' })).toBeInTheDocument();
     // The recent-checks row appears once there is another check to switch to.

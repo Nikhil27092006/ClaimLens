@@ -173,7 +173,13 @@ export interface Health {
 }
 
 /** Search sources for POST /check. */
-export type SearchSource = 'semantic_scholar' | 'arxiv' | 'tavily';
+export type SearchSource =
+  | 'semantic_scholar'
+  | 'arxiv'
+  | 'tavily'
+  | 'vector_dense'
+  | 'bm25_sparse'
+  | 'uploaded_docs';
 
 export interface CheckRequest {
   claim: string;

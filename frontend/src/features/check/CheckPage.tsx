@@ -16,6 +16,7 @@ import { EvidenceDrawer } from '@/features/evidence/EvidenceDrawer';
 import { useEvidenceViewer } from '@/features/evidence/useEvidenceViewer';
 import { sourceLabel } from '@/features/library/format';
 import { cn } from '@/lib/cn';
+import { env } from '@/lib/env';
 import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { DEFAULT_SOURCE_SETTINGS, EditSources } from './EditSources';
 import { EvidenceColumns, EvidenceColumnsSkeleton } from './EvidenceColumns';
@@ -209,7 +210,7 @@ export function CheckPage() {
       {!jobId ? (
         <EmptyState
           title="Check a claim against the literature"
-          description="Paste a claim from a paper, a post or a talk. ClaimLens searches Semantic Scholar, arXiv and the web, reads the papers in full, and shows who agrees and who disagrees, with the page for every quote."
+          description="Paste a claim from a paper, a post or a talk. ClaimLens searches your indexed library of uploaded PDFs, reads the relevant passages in full, and shows which papers support, contest, or contradict the claim — with page references for every quote."
         />
       ) : (
         <>

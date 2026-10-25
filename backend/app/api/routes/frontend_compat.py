@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from openai import AsyncOpenAI
 
 from backend.app.config import get_settings
 from backend.app.dependencies import get_orchestrator
@@ -350,46 +352,130 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                 d for d in documents.values()
                 if d.get("status") == "ready"
             ]
-            paper_ids = [d["document_id"] for d in ready_papers[:5]]
+            max_papers = body.get("max_papers", 6)
+            paper_ids = [d["document_id"] for d in ready_papers[:max_papers]]
 
-            add_step(job_id, f"Checking claim against {len(paper_ids)} ready papers...")
+            add_step(job_id, f"Retrieving evidence from {len(paper_ids)} indexed papers...")
             orchestrator = get_orchestrator()
             answer_summary = ""
-            supports = []
-            contradicts = []
+            summary_highlight = ""
+            supports: list[dict[str, Any]] = []
+            contradicts: list[dict[str, Any]] = []
             partial: list[dict[str, Any]] = []
-            insufficient = []
+            insufficient: list[dict[str, Any]] = []
 
-            if paper_ids:
+            if not paper_ids:
+                answer_summary = "No indexed papers available. Upload a PDF first."
+            else:
                 try:
+                    # Step 1: Retrieve relevant chunks via existing pipeline
                     response = await orchestrator.run(
                         "default",
                         QueryRequest(
                             question=(
-                                f"Evaluate whether the literature supports or contradicts this claim: {claim}. "
-                                "Provide a direct answer citing relevant passages."
+                                f"Find passages that either support or contradict this claim: {claim}"
                             ),
                             paper_ids=paper_ids,
                         ),
                     )
-                    answer_summary = response.answer
+
+                    # Step 2: Build evidence list from citations
+                    raw_evidence = []
                     for cit in response.citations:
-                        item = {
+                        raw_evidence.append({
                             "chunk_id": cit.chunk_id,
                             "document_id": cit.paper_id,
                             "page": cit.page_start,
                             "section": cit.section or "Section",
                             "quote": cit.snippet,
                             "highlight": cit.snippet[:80],
+                        })
+
+                    if not raw_evidence:
+                        answer_summary = "No relevant passages found in the indexed papers for this claim."
+                    else:
+                        # Step 3: LLM stance classification
+                        add_step(job_id, "Classifying evidence stance with LLM...")
+                        cfg = get_settings()
+                        llm = AsyncOpenAI(
+                            base_url=cfg.nvidia_base_url,
+                            api_key=cfg.nvidia_api_key or "none",
+                        )
+
+                        passages_text = ""
+                        for idx, ev in enumerate(raw_evidence):
+                            passages_text += (
+                                f"[{idx}] (doc={ev['document_id']}, page={ev['page']})\n"
+                                f"{ev['quote']}\n\n"
+                            )
+
+                        system_prompt = (
+                            "You are a scientific fact-checker. "
+                            "Given a claim and a list of numbered passages, classify each passage as:\n"
+                            "  - SUPPORTS   : the passage clearly supports the claim\n"
+                            "  - CONTRADICTS: the passage clearly contradicts or refutes the claim\n"
+                            "  - PARTIAL    : the passage partially supports or is tangentially related\n"
+                            "  - IRRELEVANT : the passage is unrelated\n"
+                            "Then give an overall verdict: SUPPORTED, CONTRADICTED, CONTESTED, or INSUFFICIENT_EVIDENCE.\n"
+                            "Respond ONLY with valid JSON in this exact schema:\n"
+                            "{\"verdict\": \"SUPPORTED|CONTRADICTED|CONTESTED|INSUFFICIENT_EVIDENCE\","
+                            " \"summary\": \"1-2 sentence overall assessment\","
+                            " \"summary_highlight\": \"key phrase from summary (max 8 words)\","
+                            " \"evidence\": [{\"index\": 0, \"stance\": \"SUPPORTS|CONTRADICTS|PARTIAL|IRRELEVANT\"}]}"
+                        )
+                        user_prompt = (
+                            f"Claim: {claim}\n\nPassages:\n{passages_text}"
+                        )
+
+                        llm_resp = await llm.chat.completions.create(
+                            model=cfg.nvidia_model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            temperature=0.0,
+                            max_tokens=800,
+                            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                        )
+
+                        raw_json = llm_resp.choices[0].message.content or "{}"
+                        # Strip markdown fences if present
+                        raw_json = re.sub(r"```(?:json)?\s*", "", raw_json).strip("`").strip()
+
+                        try:
+                            llm_data = json.loads(raw_json)
+                        except json.JSONDecodeError:
+                            llm_data = {}
+
+                        answer_summary = llm_data.get("summary", response.answer)
+                        summary_highlight = llm_data.get("summary_highlight", "")
+                        verdict = llm_data.get("verdict", "INSUFFICIENT_EVIDENCE")
+
+                        stance_map: dict[int, str] = {
+                            item["index"]: item["stance"]
+                            for item in llm_data.get("evidence", [])
+                            if isinstance(item.get("index"), int)
                         }
-                        if cit.validation_status == "valid":
-                            supports.append(item)
-                        else:
-                            insufficient.append(item)
+
+                        for idx, ev in enumerate(raw_evidence):
+                            stance = stance_map.get(idx, "IRRELEVANT")
+                            if stance == "SUPPORTS":
+                                supports.append(ev)
+                            elif stance == "CONTRADICTS":
+                                contradicts.append(ev)
+                            elif stance == "PARTIAL":
+                                partial.append(ev)
+                            else:
+                                insufficient.append(ev)
+
+                        # Fallback: if LLM put everything in insufficient but we have evidence, trust retrieval
+                        if not supports and not contradicts and not partial and raw_evidence:
+                            for ev in raw_evidence:
+                                partial.append(ev)
+                            answer_summary = answer_summary or "Evidence found but stance is unclear."
+
                 except Exception as exc:
                     answer_summary = f"Could not evaluate claim: {exc}"
-            else:
-                answer_summary = "No indexed papers available. Upload a PDF first."
 
             total_q = len(supports) + len(contradicts) + len(partial) + len(insufficient)
             result = {
@@ -400,11 +486,11 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                 "partial": partial,
                 "insufficient": insufficient,
                 "summary": answer_summary,
-                "summary_highlight": "",
+                "summary_highlight": summary_highlight,
                 "verified_quotes": len(supports),
                 "total_quotes": max(total_q, 1),
                 "sources": [
-                    {"name": "Uploaded Papers", "count": len(ready_papers)},
+                    {"name": "Indexed Library", "count": len(ready_papers)},
                 ],
             }
 
