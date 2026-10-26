@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { useChunk, useDocument, useDocumentFile } from '@/api/hooks';
 import { Button } from '@/components/Button';
 import { CloseIcon } from '@/components/icons';
@@ -51,6 +51,10 @@ export function EvidenceViewer({
   const [match, setMatch] = useState<{ key: string; kind: QuoteMatch['kind'] } | null>(null);
   const [pdfFailed, setPdfFailed] = useState(false);
   const { ref, width } = useElementWidth<HTMLDivElement>();
+
+  useEffect(() => {
+    setPdfFailed(false);
+  }, [target.doc, target.page]);
 
   const pages = pageCount ?? detail.data?.pages;
   const citedPage = chunk.data?.page ?? target.page;

@@ -133,15 +133,16 @@ async def get_document_file(document_id: str) -> Response:
         data = pdf_path.read_bytes()
         files[document_id] = data
         return Response(data, media_type="application/pdf")
-    # Return minimal valid 1-page PDF so evidence viewer works without 404
-    minimal_pdf = (
-        b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-        b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Resources<<>>>>endobj\n"
-        b"xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n0000000101 00000 n \n"
-        b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n180\n%%EOF\n"
-    )
-    return Response(minimal_pdf, media_type="application/pdf")
+    if document_id.startswith("chunk_"):
+        chunk = chunks_store.get(document_id)
+        if chunk and "document_id" in chunk and chunk["document_id"] != document_id:
+            parent_id = chunk["document_id"]
+            parent_path = STORAGE_PDFS_DIR / f"{parent_id}.pdf"
+            if parent_path.exists():
+                data = parent_path.read_bytes()
+                files[document_id] = data
+                return Response(data, media_type="application/pdf")
+    raise HTTPException(status_code=404, detail="Document file not found.")
 
 
 @router.delete("/documents/{document_id}", status_code=204)
@@ -154,18 +155,44 @@ async def delete_document(document_id: str) -> None:
 @router.get("/chunks/{chunk_id}")
 async def get_chunk(chunk_id: str) -> dict[str, Any]:
     chunk = chunks_store.get(chunk_id)
-    if chunk is None:
-        # Derive doc_id from chunk prefix (e.g. DOC-abc123_ch42 → DOC-abc123)
-        parts = chunk_id.rsplit("_", 1)
-        doc_id = parts[0] if len(parts) == 2 and parts[0].startswith("DOC-") else chunk_id
-        return {
-            "chunk_id": chunk_id,
-            "document_id": doc_id,
-            "page": 1,
-            "section": "Evidence Passage",
-            "text": "Evidence citation extracted from verified paper passage.",
-        }
-    return chunk
+    if chunk is not None:
+        return chunk
+    # Fallback: query persisted SQLite chunks_fts
+    path = Path("storage/bm25/index.sqlite3")
+    if path.exists():
+        try:
+            import sqlite3
+            con = sqlite3.connect(str(path))
+            cur = con.cursor()
+            cur.execute(
+                "SELECT chunk_id, paper_id, page_start, section, text FROM chunks_fts WHERE chunk_id = ? LIMIT 1",
+                (chunk_id,),
+            )
+            row = cur.fetchone()
+            con.close()
+            if row:
+                cid, pid, pstart, sec, txt = row
+                c = {
+                    "chunk_id": cid,
+                    "document_id": pid,
+                    "page": int(pstart or 1),
+                    "section": sec or "Evidence Passage",
+                    "text": txt or "",
+                }
+                chunks_store[chunk_id] = c
+                return c
+        except Exception:
+            pass
+    # Derive doc_id from chunk prefix (e.g. DOC-abc123_ch42 → DOC-abc123)
+    parts = chunk_id.rsplit("_", 1)
+    doc_id = parts[0] if len(parts) == 2 and parts[0].startswith("DOC-") else chunk_id
+    return {
+        "chunk_id": chunk_id,
+        "document_id": doc_id,
+        "page": 1,
+        "section": "Evidence Passage",
+        "text": "Evidence citation extracted from verified paper passage.",
+    }
 
 
 async def index_uploaded(document_id: str) -> None:

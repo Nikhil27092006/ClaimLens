@@ -51,7 +51,12 @@ export default function PdfPage({
       options={OPTIONS}
       loading={null}
       error={null}
-      onLoadSuccess={(pdf) => onPageCount(pdf.numPages)}
+      onLoadSuccess={(pdf) => {
+        onPageCount(pdf.numPages);
+        if (pageNumber > pdf.numPages || pageNumber < 1) {
+          onError();
+        }
+      }}
       onLoadError={onError}
     >
       <Page
@@ -60,6 +65,9 @@ export default function PdfPage({
         width={width}
         renderAnnotationLayer={false}
         loading={null}
+        error={null}
+        onLoadError={onError}
+        onRenderError={onError}
         customTextRenderer={textRenderer}
         onGetTextSuccess={({ items }) => {
           const next = findQuote(

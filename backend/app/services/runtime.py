@@ -29,6 +29,15 @@ def sync_persisted_papers(bm25_index_path: str = "storage/bm25/index.sqlite3") -
         cur.execute("SELECT DISTINCT workspace_id, paper_id FROM chunks_fts")
         for ws, pid in cur.fetchall():
             publish_indexed_paper(ws, pid)
+        cur.execute("SELECT chunk_id, paper_id, page_start, section, text FROM chunks_fts")
+        for cid, pid, pstart, sec, txt in cur.fetchall():
+            chunks_store[cid] = {
+                "chunk_id": cid,
+                "document_id": pid,
+                "page": int(pstart or 1),
+                "section": sec or "Evidence Passage",
+                "text": txt or "",
+            }
         con.close()
     except Exception:
         pass
