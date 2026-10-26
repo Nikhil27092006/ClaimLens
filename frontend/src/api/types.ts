@@ -87,6 +87,8 @@ export interface CompareCell {
   page?: number;
   /** PROPOSED: section label shown next to the page, e.g. "§2", "Table 3". */
   section?: string;
+  /** Short exact quote to highlight on the page */
+  quote?: string;
 }
 
 export interface CompareRow {
@@ -100,6 +102,8 @@ export interface ContradictionSide {
   chunk_id: string;
   document_id: string;
   page: number;
+  /** Exact quote to highlight on the page */
+  quote?: string;
   /** PROPOSED: the paper's title, so a conflict reads on its own ("A · <title> · p.7"). */
   title?: string;
 }

@@ -7,8 +7,11 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+import logging
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -254,6 +257,128 @@ async def upload_documents(
     return accepted
 
 
+def _resolve_pdf_url(url: str) -> tuple[str, str]:
+    """
+    Resolve a user-provided URL (arXiv abstract, DOI, Semantic Scholar, direct PDF)
+    to a direct PDF download URL and a human-readable filename.
+
+    Returns (pdf_url, filename).
+    """
+    import re as _re
+
+    url = url.strip()
+
+    # ── arXiv ──────────────────────────────────────────────────────────────────
+    # https://arxiv.org/abs/2301.00001  →  https://arxiv.org/pdf/2301.00001.pdf
+    # https://arxiv.org/pdf/2301.00001 (already a pdf link)
+    arxiv_abs = _re.match(
+        r"https?://arxiv\.org/abs/([0-9]{4}\.[0-9]{4,5}(v\d+)?)", url
+    )
+    if arxiv_abs:
+        paper_id = arxiv_abs.group(1)
+        return f"https://arxiv.org/pdf/{paper_id}.pdf", f"arxiv_{paper_id.replace('.', '_')}.pdf"
+
+    arxiv_pdf = _re.match(
+        r"https?://arxiv\.org/pdf/([0-9]{4}\.[0-9]{4,5}(v\d+)?)(\.pdf)?", url
+    )
+    if arxiv_pdf:
+        paper_id = arxiv_pdf.group(1)
+        return f"https://arxiv.org/pdf/{paper_id}.pdf", f"arxiv_{paper_id.replace('.', '_')}.pdf"
+
+    # ── DOI ────────────────────────────────────────────────────────────────────
+    # https://doi.org/10.XXXX/…  →  attempt Unpaywall open-access PDF first
+    doi_match = _re.match(r"https?://doi\.org/(10\.\S+)", url)
+    if doi_match:
+        doi = doi_match.group(1)
+        # Try Unpaywall to get an OA PDF URL
+        unpaywall_url = f"https://api.unpaywall.org/v2/{doi}?email=claimlens@example.com"
+        return unpaywall_url, f"doi_{doi.replace('/', '_').replace('.', '_')[:40]}.pdf"
+
+    # ── Semantic Scholar ───────────────────────────────────────────────────────
+    # https://www.semanticscholar.org/paper/Title/SHA  →  use S2 API
+    ss_match = _re.search(r"semanticscholar\.org/paper/[^/]+/([A-Za-z0-9]+)", url)
+    if ss_match:
+        paper_hash = ss_match.group(1)
+        return (
+            f"https://api.semanticscholar.org/graph/v1/paper/{paper_hash}?fields=openAccessPdf",
+            f"s2_{paper_hash[:16]}.pdf",
+        )
+
+    # ── Fallback: assume it is already a direct PDF link ──────────────────────
+    filename = url.split("/")[-1].split("?")[0] or "paper.pdf"
+    if not filename.endswith(".pdf"):
+        filename += ".pdf"
+    return url, filename
+
+
+async def _download_pdf(url: str, filename: str) -> bytes:
+    """
+    Download PDF bytes, handling Unpaywall and Semantic Scholar API redirects
+    before falling back to a direct download.
+    """
+    import httpx as _httpx
+    import json as _json
+    import re as _re
+
+    headers = {"User-Agent": "ClaimLens-Research-Analyzer/1.0 (mailto:claimlens@example.com)"}
+
+    async with _httpx.AsyncClient(timeout=60, follow_redirects=True, headers=headers) as client:
+        # ── Unpaywall JSON response ─────────────────────────────────────────
+        if "api.unpaywall.org" in url:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            oa_url = (data.get("best_oa_location") or {}).get("url_for_pdf")
+            if not oa_url:
+                # Try any location with a PDF URL
+                for loc in (data.get("oa_locations") or []):
+                    oa_url = loc.get("url_for_pdf")
+                    if oa_url:
+                        break
+            if not oa_url:
+                raise ValueError(
+                    "This article does not appear to have an open-access PDF. "
+                    "Try pasting the direct arXiv or PDF URL instead."
+                )
+            pdf_resp = await client.get(oa_url)
+            pdf_resp.raise_for_status()
+            return pdf_resp.content
+
+        # ── Semantic Scholar API JSON response ──────────────────────────────
+        if "api.semanticscholar.org" in url:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            oa = data.get("openAccessPdf") or {}
+            pdf_url = oa.get("url")
+            if not pdf_url:
+                raise ValueError(
+                    "Semantic Scholar does not have an open-access PDF for this paper. "
+                    "Try pasting the direct arXiv or PDF URL instead."
+                )
+            pdf_resp = await client.get(pdf_url)
+            pdf_resp.raise_for_status()
+            return pdf_resp.content
+
+        # ── Direct PDF / arXiv PDF ──────────────────────────────────────────
+        resp = await client.get(url)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if "pdf" not in content_type and "octet-stream" not in content_type:
+            # If we got HTML back, it's likely an abs page — try appending .pdf for arXiv
+            arxiv_m = _re.search(r"arxiv\.org/(abs|pdf)/([0-9]{4}\.[0-9]{4,5}(v\d+)?)", url)
+            if arxiv_m:
+                paper_id = arxiv_m.group(2)
+                pdf_resp = await client.get(f"https://arxiv.org/pdf/{paper_id}.pdf")
+                pdf_resp.raise_for_status()
+                return pdf_resp.content
+            raise ValueError(
+                f"The URL did not return a PDF (content-type: {content_type}). "
+                "Please paste a direct PDF link or an arXiv abstract URL."
+            )
+        return resp.content
+
+
 @router.post("/documents/fetch", status_code=202)
 async def fetch_document(
     background_tasks: BackgroundTasks,
@@ -262,20 +387,32 @@ async def fetch_document(
     url = body.get("url")
     if not url:
         raise HTTPException(status_code=400, detail="URL is required.")
-    document_id = f"DOC-{uuid4().hex[:10]}"
-    import httpx
 
+    # Resolve the URL to a PDF download URL
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            contents = resp.content
+        pdf_url, filename = _resolve_pdf_url(url)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to fetch PDF from URL: {exc}")
+        raise HTTPException(status_code=400, detail=f"Could not resolve URL: {exc}")
 
-    filename = url.split("/")[-1].split("?")[0] or f"{document_id}.pdf"
-    if not filename.endswith(".pdf"):
-        filename += ".pdf"
+    # Download the PDF
+    try:
+        contents = await _download_pdf(pdf_url, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch PDF: {exc}")
+
+    # Validate it is actually a PDF
+    if not contents.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The downloaded file is not a valid PDF. "
+                "Please paste a direct PDF URL (e.g. https://arxiv.org/pdf/XXXX.XXXXX.pdf)."
+            ),
+        )
+
+    document_id = f"DOC-{uuid4().hex[:10]}"
     files[document_id] = contents
     try:
         (STORAGE_PDFS_DIR / f"{document_id}.pdf").write_bytes(contents)
@@ -562,42 +699,64 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                 title = doc.get("title", d_id)
                 filters = RetrievalFilters()
                 try:
-                    emb = await orchestrator.embedding_provider.embed(
-                        f"{title} methods results benchmarks limitations contributions"
-                    )
+                    query_text = f"{title} methods architecture datasets benchmarks results computational cost limitations"
+                    emb = await orchestrator.embedding_provider.embed(query_text)
                     dense = await orchestrator.dense_retriever.search(
-                        emb, "default", [d_id], filters, 15
+                        emb, "default", [d_id], filters, 20
                     )
-                    sparse = await orchestrator.sparse_retriever.search(
-                        "method results benchmark cost contribution limitations",
-                        "default",
-                        [d_id],
-                        filters,
-                        15,
-                    ) if orchestrator.sparse_retriever else []
+                    sparse = (
+                        await orchestrator.sparse_retriever.search(
+                            "methods architecture dataset benchmark results cost limitations contribution",
+                            "default",
+                            [d_id],
+                            filters,
+                            20,
+                        )
+                        if orchestrator.sparse_retriever
+                        else []
+                    )
                     candidates = reciprocal_rank_fusion([dense, sparse]) if sparse else dense
-                    evidence = select_evidence(candidates, 5)
-                    evidence = compress_context(evidence, 3000)
+                    if orchestrator.reranker is not None and candidates:
+                        candidates = await orchestrator.reranker.rerank(query_text, candidates, 10)
+                    evidence = select_evidence(candidates, 8)
+                    evidence = compress_context(evidence, 4000)
                 except Exception:
                     evidence = []
 
-                first_chunk = evidence[0].candidate.chunk_id if evidence else f"{d_id}_ch1"
-                first_page = evidence[0].candidate.page_start if evidence else 1
-                first_section = evidence[0].candidate.section if evidence else "Results"
+                if not evidence:
+                    return {
+                        attr: {
+                            "value": f"Not explicitly reported in {title}.",
+                            "chunk_id": f"{d_id}_ch1",
+                            "page": 1,
+                            "section": "Results",
+                            "quote": "",
+                        }
+                        for attr in attributes
+                    }
 
-                evidence_text = "\n".join(
-                    f"[{i+1}] {item.candidate.text}" for i, item in enumerate(evidence)
+                evidence_chunks = [item.candidate for item in evidence]
+                evidence_text = "\n\n".join(
+                    f"[{i+1}] (Page {c.page_start}, Section: {c.section or 'General'})\n{c.text.strip()}"
+                    for i, c in enumerate(evidence_chunks)
                 )
+
                 system_prompt = (
-                    "You are an expert research paper analyst. Based on the provided evidence, "
-                    "extract a concise 1-sentence summary for each requested attribute. "
-                    "Output ONLY a valid JSON object where keys are the exact attribute names "
-                    "and values are 1-sentence strings. If not mentioned, state 'Not explicitly reported in paper.'"
+                    "You are an expert scientific paper analyst. Based on the numbered evidence chunks from the paper, "
+                    "extract a concise, factual 1-sentence summary for each requested attribute.\n"
+                    "Output ONLY valid JSON matching this structure:\n"
+                    "{\n"
+                    "  \"<Attribute Name>\": {\n"
+                    "    \"value\": \"Concise 1-sentence summary (or 'Not explicitly reported in paper' if missing)\",\n"
+                    "    \"chunk_index\": <1-based index (1 to N) of the chunk containing the primary evidence, or null>,\n"
+                    "    \"quote\": \"Short exact snippet (5 to 15 words) from that chunk\"\n"
+                    "  }\n"
+                    "}"
                 )
                 user_prompt = (
                     f"Paper: {title}\n"
                     f"Attributes to extract: {json.dumps(attributes)}\n\n"
-                    f"Evidence:\n{evidence_text}"
+                    f"Evidence Chunks:\n{evidence_text}"
                 )
                 try:
                     resp = await orchestrator.generator.client.chat.completions.create(
@@ -606,28 +765,46 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},
                         ],
-                        max_tokens=600,
+                        max_tokens=800,
                         temperature=0.1,
                         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     content = (resp.choices[0].message.content or "").strip()
                     idx1, idx2 = content.find("{"), content.rfind("}")
-                    if idx1 != -1 and idx2 != -1:
-                        data = json.loads(content[idx1:idx2+1])
-                    else:
-                        data = {}
+                    data = json.loads(content[idx1:idx2+1]) if (idx1 != -1 and idx2 != -1) else {}
                 except Exception:
                     data = {}
 
-                return {
-                    attr: {
-                        "value": str(data.get(attr, f"Not explicitly reported in {title}.")),
-                        "chunk_id": first_chunk,
-                        "page": first_page,
-                        "section": first_section or "Results",
+                def resolve_attribute_cell(attr_name: str) -> dict[str, Any]:
+                    raw = data.get(attr_name, {})
+                    if isinstance(raw, str):
+                        raw = {"value": raw}
+                    val = str(raw.get("value", f"Not explicitly reported in {title}."))
+                    quote = str(raw.get("quote", "")).strip()
+
+                    # Find matched chunk by index or quote
+                    matched_chunk = None
+                    c_idx = raw.get("chunk_index")
+                    if isinstance(c_idx, int) and 1 <= c_idx <= len(evidence_chunks):
+                        matched_chunk = evidence_chunks[c_idx - 1]
+                    elif quote:
+                        for c in evidence_chunks:
+                            if quote.lower() in c.text.lower():
+                                matched_chunk = c
+                                break
+
+                    if matched_chunk is None:
+                        matched_chunk = evidence_chunks[0]
+
+                    return {
+                        "value": val,
+                        "chunk_id": matched_chunk.chunk_id,
+                        "page": matched_chunk.page_start,
+                        "section": matched_chunk.section or "Results",
+                        "quote": quote or matched_chunk.text[:100],
                     }
-                    for attr in attributes
-                }
+
+                return {attr: resolve_attribute_cell(attr) for attr in attributes}
 
             # Run extraction for all papers concurrently
             paper_extractions = await asyncio.gather(
@@ -646,6 +823,7 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
                         "chunk_id": f"{d_id}_ch1",
                         "page": 1,
                         "section": "Results",
+                        "quote": "",
                     })
                 rows.append({"attribute": attr, "values": values})
 
@@ -676,7 +854,7 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
 
             orchestrator = get_orchestrator()
 
-            # Compare pairs in parallel (limit to 3 pairs for maximum speed)
+            # Compare pairs in parallel (limit to 3 pairs for maximum responsiveness)
             pairs = []
             for i in range(len(doc_ids)):
                 for j in range(i + 1, len(doc_ids)):
@@ -685,62 +863,214 @@ async def run_job(job_id: str, kind: str, body: dict[str, Any]) -> None:  # noqa
 
             add_step(job_id, f"Evaluating {len(pairs)} paper pairs for conflicting findings...")
 
-            async def evaluate_pair(d1: str, d2: str) -> dict[str, Any] | None:
+            from query_pipeline.app.schemas.retrieval import RetrievalFilters
+            from query_pipeline.app.pipeline.fusion import reciprocal_rank_fusion
+            from query_pipeline.app.pipeline.evidence_selection import select_evidence
+
+            async def get_paper_chunks(d_id: str, search_query: str) -> list[Any]:
+                filters = RetrievalFilters()
+                try:
+                    emb = await orchestrator.embedding_provider.embed(search_query)
+                    dense = await orchestrator.dense_retriever.search(
+                        emb, "default", [d_id], filters, 15
+                    )
+                    sparse = (
+                        await orchestrator.sparse_retriever.search(
+                            search_query, "default", [d_id], filters, 15
+                        )
+                        if orchestrator.sparse_retriever
+                        else []
+                    )
+                    candidates = reciprocal_rank_fusion([dense, sparse]) if sparse else dense
+                    if orchestrator.reranker is not None and candidates:
+                        candidates = await orchestrator.reranker.rerank(search_query, candidates, 8)
+                    evidence = select_evidence(candidates, 6)
+                    return [item.candidate for item in evidence]
+                except Exception:
+                    return []
+
+            async def evaluate_pair(d1: str, d2: str) -> list[dict[str, Any]]:
                 t1 = documents.get(d1, {}).get("title", d1)
                 t2 = documents.get(d2, {}).get("title", d2)
+
+                raw_topic = body.get("topic", "").strip()
+                if raw_topic:
+                    search_q = f"{raw_topic} architecture method findings results limitations trade-offs"
+                else:
+                    search_q = "architecture method attention model design findings results limitations trade-offs comparison"
+
+                chunks_1, chunks_2 = await asyncio.gather(
+                    get_paper_chunks(d1, search_q),
+                    get_paper_chunks(d2, search_q),
+                )
+
+                if not chunks_1 or not chunks_2:
+                    return []
+
+                text_1 = "\n\n".join(
+                    f"[A{i+1}] (Page {c.page_start}): {c.text.strip()}"
+                    for i, c in enumerate(chunks_1)
+                )
+                text_2 = "\n\n".join(
+                    f"[B{i+1}] (Page {c.page_start}): {c.text.strip()}"
+                    for i, c in enumerate(chunks_2)
+                )
+
+                system_prompt = (
+                    "You are an expert scientific referee for ClaimLens.\n"
+                    "Analyze the provided evidence chunks from Paper A and Paper B.\n"
+                    "Identify key scientific conflicts, disagreements, contrasting claims, or divergent methodologies/trade-offs between the two papers.\n\n"
+                    "For each conflict or disagreement found:\n"
+                    "- status MUST be either:\n"
+                    "  * \"CONTRADICTED\": Opposing claims, contradictory findings, or direct disagreement on approach/performance.\n"
+                    "  * \"PARTIALLY_SUPPORTED\": Divergent approaches, differing assumptions, conflicting trade-offs (e.g. latency vs accuracy, bidirectional vs autoregressive, compute vs quality), or domain-specific constraints where one paper's findings challenge or diverge from the other.\n"
+                    "- Provide exact verbatim quotes from both papers and specific explanatory factors.\n\n"
+                    "Return a JSON array of conflict objects (up to 3 distinct conflicts). If the papers genuinely have zero conceptual overlap or divergence, return an empty array [].\n"
+                    "JSON Schema:\n"
+                    "[\n"
+                    "  {\n"
+                    "    \"topic\": \"Clear title of the conflict/disagreement\",\n"
+                    "    \"status\": \"CONTRADICTED\" or \"PARTIALLY_SUPPORTED\",\n"
+                    "    \"claim_a_quote\": \"Exact quote from Paper A\",\n"
+                    "    \"claim_a_chunk_index\": 1,\n"
+                    "    \"claim_b_quote\": \"Exact quote from Paper B\",\n"
+                    "    \"claim_b_chunk_index\": 1,\n"
+                    "    \"explanation\": \"2-sentence explanation of why these papers disagree or differ on this point\",\n"
+                    "    \"factors\": [\"factor 1\", \"factor 2\"]\n"
+                    "  }\n"
+                    "]"
+                )
+                user_prompt = (
+                    f"Paper A: {t1}\n"
+                    f"Evidence for Paper A:\n{text_1}\n\n"
+                    f"Paper B: {t2}\n"
+                    f"Evidence for Paper B:\n{text_2}\n\n"
+                    f"Topic of inquiry: {raw_topic or 'Key findings, architecture, methodology, and limitations'}\n\n"
+                    "Return JSON array only:"
+                )
+
                 try:
-                    resp = await orchestrator.run(
-                        "default",
-                        QueryRequest(
-                            question=(
-                                f"Compare '{t1}' and '{t2}' on '{topic}'. "
-                                "Identify any disagreement, difference in methodology, or conflicting result. "
-                                "Explain concisely in 2 sentences."
-                            ),
-                            paper_ids=[d1, d2],
-                        ),
+                    resp = await orchestrator.generator.client.chat.completions.create(
+                        model=orchestrator.generator.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        max_tokens=2000,
+                        temperature=0.1,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
-                    answer = resp.answer.strip()
-                    cits_d1 = [c for c in resp.citations if c.paper_id == d1]
-                    cits_d2 = [c for c in resp.citations if c.paper_id == d2]
-                    cit1 = cits_d1[0] if cits_d1 else (resp.citations[0] if resp.citations else None)
-                    cit2 = cits_d2[0] if cits_d2 else (resp.citations[1] if len(resp.citations) > 1 else cit1)
+                    content = (resp.choices[0].message.content or "").strip()
+                    logger.info("Contradiction completion for (%s, %s) length=%d", d1, d2, len(content))
 
-                    claim_a_text = cit1.snippet if cit1 else f"{t1}: Reported findings on {topic}."
-                    claim_b_text = cit2.snippet if cit2 else f"{t2}: Reported findings on {topic}."
+                    items = []
+                    idx1, idx2 = content.find("["), content.rfind("]")
+                    if idx1 != -1 and idx2 != -1 and idx2 > idx1:
+                        try:
+                            val = json.loads(content[idx1:idx2+1])
+                            if isinstance(val, list):
+                                items = val
+                        except Exception:
+                            pass
 
-                    if answer and len(answer) > 20:
-                        return {
-                            "id": f"conflict_{uuid4().hex[:6]}",
-                            "topic": topic,
-                            "status": "CONTRADICTED",
+                    # Fallback 1: single object with "conflicts"
+                    if not items:
+                        o1, o2 = content.find("{"), content.rfind("}")
+                        if o1 != -1 and o2 != -1 and o2 > o1:
+                            try:
+                                single = json.loads(content[o1:o2+1])
+                                if "conflicts" in single and isinstance(single["conflicts"], list):
+                                    items = single["conflicts"]
+                                elif single.get("topic") or single.get("explanation"):
+                                    items = [single]
+                            except Exception:
+                                pass
+
+                    # Fallback 2: regex salvage individual { ... } items if array was truncated
+                    if not items:
+                        pattern = re.compile(r'\{[^{}]*\"topic\"[^{}]*\}', re.DOTALL)
+                        for m in pattern.finditer(content):
+                            try:
+                                obj = json.loads(m.group(0))
+                                if isinstance(obj, dict) and (obj.get("topic") or obj.get("explanation")):
+                                    items.append(obj)
+                            except Exception:
+                                pass
+
+                    results = []
+                    for data in items:
+                        if not isinstance(data, dict):
+                            continue
+                        explanation = str(data.get("explanation", "")).strip()
+                        if not explanation:
+                            continue
+
+                        status = "CONTRADICTED" if data.get("status") == "CONTRADICTED" else "PARTIALLY_SUPPORTED"
+                        conflict_topic = str(data.get("topic") or raw_topic or "Methodological & Empirical Divergence").strip()
+
+                        # Locate chunks
+                        idx_a = data.get("claim_a_chunk_index", 1)
+                        idx_b = data.get("claim_b_chunk_index", 1)
+                        c_a = chunks_1[idx_a - 1] if isinstance(idx_a, int) and 1 <= idx_a <= len(chunks_1) else chunks_1[0]
+                        c_b = chunks_2[idx_b - 1] if isinstance(idx_b, int) and 1 <= idx_b <= len(chunks_2) else chunks_2[0]
+
+                        quote_a = str(data.get("claim_a_quote") or c_a.text[:120]).strip()
+                        quote_b = str(data.get("claim_b_quote") or c_b.text[:120]).strip()
+
+                        raw_factors = data.get("factors", [])
+                        if isinstance(raw_factors, list):
+                            factors = [str(f).strip() for f in raw_factors if str(f).strip()]
+                        elif isinstance(raw_factors, str) and raw_factors.strip():
+                            factors = [raw_factors.strip()]
+                        else:
+                            factors = [conflict_topic]
+
+                        results.append({
+                            "topic": conflict_topic,
+                            "status": status,
                             "claim_a": {
-                                "text": claim_a_text[:400],
-                                "chunk_id": cit1.chunk_id if cit1 else f"{d1}_ch1",
+                                "text": quote_a[:400],
+                                "quote": quote_a,
+                                "chunk_id": c_a.chunk_id,
                                 "document_id": d1,
-                                "page": cit1.page_start if cit1 else 1,
+                                "page": c_a.page_start,
                                 "title": t1,
                             },
                             "claim_b": {
-                                "text": claim_b_text[:400],
-                                "chunk_id": cit2.chunk_id if cit2 else f"{d2}_ch1",
+                                "text": quote_b[:400],
+                                "quote": quote_b,
+                                "chunk_id": c_b.chunk_id,
                                 "document_id": d2,
-                                "page": cit2.page_start if cit2 else 1,
+                                "page": c_b.page_start,
                                 "title": t2,
                             },
-                            "explanation": answer[:500],
-                            "factors": [topic],
-                        }
-                except Exception:
-                    pass
-                return None
+                            "explanation": explanation[:600],
+                            "factors": factors[:4],
+                        })
+                    logger.info("Found %d conflicts for pair (%s, %s)", len(results), d1, d2)
+                    return results
+                except Exception as exc:
+                    logger.error("evaluate_pair failed for (%s, %s): %s", d1, d2, exc, exc_info=True)
+                    return []
 
             pair_results = await asyncio.gather(
                 *[evaluate_pair(d1, d2) for d1, d2 in pairs],
                 return_exceptions=True,
             )
-            conflicts = [p for p in pair_results if isinstance(p, dict)]
-            add_step(job_id, f"Found {len(conflicts)} conflict findings.")
+            raw_conflicts: list[dict[str, Any]] = []
+            for r in pair_results:
+                if isinstance(r, list):
+                    raw_conflicts.extend(r)
+                elif isinstance(r, Exception):
+                    logger.error("Pair evaluation failed with exception: %s", r)
+
+            # Assign clean serial identifiers C-01, C-02, ...
+            conflicts = []
+            for idx, item in enumerate(raw_conflicts):
+                item["id"] = f"C-{idx+1:02d}"
+                conflicts.append(item)
+
+            add_step(job_id, f"Found {len(conflicts)} conflict findings across papers.")
             result = conflicts
 
         else:

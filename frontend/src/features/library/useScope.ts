@@ -5,7 +5,7 @@ import type { Document } from '@/api/types';
 import { parseIds } from './format';
 
 /** At most this many papers go into Ask, Compare or Conflicts when none are chosen. */
-const DEFAULT_SCOPE = 10;
+const DEFAULT_SCOPE = 2;
 
 /** Only include ready papers (real uploaded DOC- or valid DOC stubs). */
 const isRealPaper = (doc: Document) =>
@@ -14,7 +14,7 @@ const isRealPaper = (doc: Document) =>
 /**
  * The papers Ask, Compare and Conflicts work on, driven by ?docs=DOC-xxx,DOC-yyy.
  *
- * - On first load, seeds ?docs= with all currently-ready real papers.
+ * - On first load, seeds ?docs= with user's selected papers or top 2 papers.
  * - Whenever a new real paper finishes indexing (status flips to "ready"),
  *   it is automatically added to the scope so Ask/Compare/Conflicts pick it up.
  */
@@ -41,10 +41,21 @@ export function useScope() {
 
       // Seed ?docs= only when empty/null
       if (params.get('docs') === null) {
+        let seedIds = readyIds.slice(0, DEFAULT_SCOPE);
+        try {
+          const saved = sessionStorage.getItem('claimlens_selected_docs');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            const valid = parsed.filter((id: string) => readyIds.includes(id));
+            if (valid.length >= 2) seedIds = valid.slice(0, 4);
+          }
+        } catch {
+          // ignore
+        }
         setParams(
           (prev) => {
             const next = new URLSearchParams(prev);
-            next.set('docs', readyIds.slice(0, DEFAULT_SCOPE).join(','));
+            next.set('docs', seedIds.join(','));
             return next;
           },
           { replace: true },
@@ -61,7 +72,8 @@ export function useScope() {
         (prev) => {
           const next = new URLSearchParams(prev);
           const current = parseIds(prev.get('docs'));
-          const merged = [...current, ...newlyReady].slice(0, DEFAULT_SCOPE);
+          // Add new papers to scope without capping (user can remove from Library)
+          const merged = [...new Set([...current, ...newlyReady])];
           next.set('docs', merged.join(','));
           return next;
         },
