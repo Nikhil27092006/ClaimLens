@@ -59,7 +59,10 @@ export function EvidenceViewer({
   const pages = pageCount ?? detail.data?.pages;
   const citedPage = chunk.data?.page ?? target.page;
   const onCitedPage = target.page === citedPage;
-  const quote = onCitedPage ? chunk.data?.text : undefined;
+  // Prefer the short snippet from the evidence result; fall back to full chunk text.
+  const quote = onCitedPage
+    ? (target.quote || (chunk.data?.text ? chunk.data.text.slice(0, 200) : undefined))
+    : undefined;
   const matchKey = `${target.doc}:${target.page}:${target.chunk ?? ''}`;
   const matchKind = match?.key === matchKey ? match.kind : undefined;
 

@@ -1,5 +1,5 @@
 // Loaded lazily: this module pulls in react-pdf and pdf.js.
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import type { CustomTextRenderer } from 'react-pdf/dist/shared/types.js';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -35,6 +35,11 @@ export default function PdfPage({
   // pdf.js transfers the buffer to its worker, so hand it a copy and keep the cached bytes.
   const file = useMemo(() => ({ data: data.slice() }), [data]);
   const [match, setMatch] = useState<QuoteMatch | null>(null);
+
+  // Reset highlight whenever the visible page or the target quote changes.
+  useEffect(() => {
+    setMatch(null);
+  }, [pageNumber, quote]);
 
   const ranges = useMemo(
     () => new Map((match?.ranges ?? []).map((range) => [range.item, range])),

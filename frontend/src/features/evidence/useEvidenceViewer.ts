@@ -5,11 +5,13 @@ export interface EvidenceTarget {
   doc: string;
   page: number;
   chunk?: string;
+  /** Short verbatim quote to highlight on the PDF page (the evidence snippet, not the full chunk). */
+  quote?: string;
   /** Citation number shown in the header: "Evidence viewer · [2]". */
   n?: number;
 }
 
-const KEYS = ['doc', 'page', 'chunk', 'cite'] as const;
+const KEYS = ['doc', 'page', 'chunk', 'cite', 'q'] as const;
 
 // The element that opened the viewer, so closing can return focus to it.
 let lastTrigger: HTMLElement | null = null;
@@ -24,10 +26,11 @@ export function useEvidenceViewer() {
   const page = Number(params.get('page')) || 1;
   const chunk = params.get('chunk') ?? undefined;
   const cite = Number(params.get('cite')) || undefined;
+  const quote = params.get('q') ?? undefined;
 
   const target = useMemo<EvidenceTarget | null>(
-    () => (doc ? { doc, page, chunk, n: cite } : null),
-    [doc, page, chunk, cite],
+    () => (doc ? { doc, page, chunk, quote, n: cite } : null),
+    [doc, page, chunk, quote, cite],
   );
 
   const open = useCallback(
@@ -41,6 +44,8 @@ export function useEvidenceViewer() {
         else updated.delete('chunk');
         if (next.n) updated.set('cite', String(next.n));
         else updated.delete('cite');
+        if (next.quote) updated.set('q', next.quote);
+        else updated.delete('q');
         return updated;
       });
     },
