@@ -23,7 +23,6 @@ COPY backend/ ./backend/
 COPY query_pipeline/ ./query_pipeline/
 COPY document_pipeline/ ./document_pipeline/
 COPY database/ ./database/
-COPY storage/ ./storage/
 
 # Ensure runtime directories exist
 RUN mkdir -p storage/bm25 storage/qdrant storage/uploads
