@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/Button';
+import { replayEntryAnimation } from '@/components/EntryAnimation';
 import { endSession } from './session';
 
 /** The "AC" square in the header: shows the demo session and signs out. */
@@ -57,6 +58,16 @@ export function AccountMenu() {
           <p className="text-[14px] leading-[1.5] text-ink-2">
             No account: your papers and checks stay in this browser tab.
           </p>
+          <Button
+            variant="secondary"
+            fullWidth
+            onClick={() => {
+              setOpen(false);
+              replayEntryAnimation();
+            }}
+          >
+            Replay intro
+          </Button>
           <Button variant="secondary" fullWidth onClick={signOut}>
             Sign out
           </Button>
