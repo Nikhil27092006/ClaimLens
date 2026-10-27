@@ -9,15 +9,18 @@ from backend.app.api.routes.queries import router as query_router
 from backend.app.config import get_settings
 from backend.app.observability.logging import configure_logging
 
+settings = get_settings()
 app = FastAPI(title="ResearchLens Query Service", version="0.1.0")
+configured_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=configured_origins,
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-configure_logging(get_settings().log_level)
+configure_logging(settings.log_level)
 app.include_router(health_router)
 app.include_router(query_router)
 app.include_router(frontend_compat_router)

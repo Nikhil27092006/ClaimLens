@@ -1,0 +1,38 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: claimlens-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./storage/qdrant_data:/qdrant/storage
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: claimlens-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - USE_FAKE_PROVIDERS=false
+      - QDRANT_URL=http://qdrant:6333
+      - NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - NVIDIA_MODEL=${NVIDIA_MODEL:-nvidia/nemotron-3-ultra-550b-a55b}
+      - EMBEDDING_BASE_URL=https://integrate.api.nvidia.com/v1
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-${NVIDIA_API_KEY}}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nvidia/nemotron-3-embed-1b}
+      - EMBEDDING_DIMENSION=2048
+      - RERANKER_BASE_URL=https://integrate.api.nvidia.com/v1
+      - RERANKER_API_KEY=${RERANKER_API_KEY}
+      - RERANKER_MODEL=${RERANKER_MODEL:-nvidia/nemotron-3.5-rerank-8b}
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      - qdrant
